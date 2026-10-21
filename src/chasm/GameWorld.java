@@ -26,6 +26,8 @@ public final class GameWorld {
     public WallSegment[] wallSegments;
     private int rootBSPNodeIndex = -1;
     private boolean polygonSectorLookup;
+    /** Blood maps use flat PVS and need per-frame front-to-back sector ordering. */
+    public boolean distanceOrderSectors;
 
     private Texture[] animatedWallTargets;
     private Texture[][] animatedWallFrames;

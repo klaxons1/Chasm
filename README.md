@@ -100,8 +100,9 @@ by that map. RFF resources such as the Blood MIDIs can also be extracted with
 exercised against all 43 maps in the provided archive. `tools/blood_to_c3b.py`
 can compile one map or the full map set, converting sector polygons,
 portal walls, floor/ceiling materials, BSP leaves, and spawn point to the J2ME
-engine's C3B format. The generated textures are resized and quantized for the
-engine's 4-bit feature-phone renderer.
+engine's C3B format. Wall ART dimensions and panning are preserved, including
+Build wall repeat factors; flats are adapted to the renderer's 64x64 plane
+format. Materials are quantized to the engine's 4-bit feature-phone palette.
 
 Build the Blood exploration MIDlet with the same LLM-J2ME-SUITE/JDK toolchain
 used by `build.sh` for Chasm. The default map is E1M1; `BLOOD_MAP` can select

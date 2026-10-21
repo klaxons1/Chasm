@@ -58,6 +58,8 @@ public class PortalRenderer {
 
     /** Screen pixel buffer for rendering */
     public static int[] screenBuffer;
+    private static WallSegment[] bloodWallOrder;
+    private static int[] bloodWallDepth;
 
     /**
      * Saved clip state for each traversed sector. Plain arrays avoid Vector's
@@ -220,7 +222,8 @@ public class PortalRenderer {
      * @return true if the wall segment is visible after clipping, false otherwise
      */
     private static boolean clipAndProjectWallSegment(Point2D startPoint, Point2D endPoint,
-                                                     int relativeCeilingHeight, int relativeFloorHeight, int textureOffset) {
+                                                     int relativeCeilingHeight, int relativeFloorHeight,
+                                                     int textureOffset, boolean allowReversedFace) {
 
         if (startPoint.y <= NEAR_CLIP_DISTANCE && endPoint.y <= NEAR_CLIP_DISTANCE) {
             return false;
@@ -277,23 +280,37 @@ public class PortalRenderer {
             return false;
         }
 
-        // Project to screen space
+        // Project to screen space. Imported sector loops may wind either way;
+        // normalize endpoints to left-to-right before the column rasterizer.
         long startDepthReciprocal = PROJECTION_CONSTANT / (long)clippedWallStart.y >> 16;
         long endDepthReciprocal = PROJECTION_CONSTANT / (long)clippedWallEnd.y >> 16;
-
-        clippedWallStart.x = (int)((long)clippedWallStart.x * startDepthReciprocal >> 16);
-        if (clippedWallStart.x > HALF_VIEWPORT_WIDTH_FP) {
+        int startScreenX = (int)((long)clippedWallStart.x * startDepthReciprocal >> 16);
+        int endScreenX = (int)((long)clippedWallEnd.x * endDepthReciprocal >> 16);
+        if ((startScreenX > HALF_VIEWPORT_WIDTH_FP && endScreenX > HALF_VIEWPORT_WIDTH_FP)
+                || (startScreenX < -HALF_VIEWPORT_WIDTH_FP && endScreenX < -HALF_VIEWPORT_WIDTH_FP)) {
             return false;
         }
 
-        clippedWallEnd.x = (int)((long)clippedWallEnd.x * endDepthReciprocal >> 16);
-        if (clippedWallEnd.x < -HALF_VIEWPORT_WIDTH_FP) {
-            return false;
+        if (endScreenX < startScreenX) {
+            if (!allowReversedFace) return false;
+            int value = clippedWallStart.x;
+            clippedWallStart.x = clippedWallEnd.x;
+            clippedWallEnd.x = value;
+            value = clippedWallStart.y;
+            clippedWallStart.y = clippedWallEnd.y;
+            clippedWallEnd.y = value;
+            value = clippedTextureStartU;
+            clippedTextureStartU = clippedTextureEndU;
+            clippedTextureEndU = value;
+            long reciprocal = startDepthReciprocal;
+            startDepthReciprocal = endDepthReciprocal;
+            endDepthReciprocal = reciprocal;
+            value = startScreenX;
+            startScreenX = endScreenX;
+            endScreenX = value;
         }
-
-        if (clippedWallEnd.x < clippedWallStart.x) {
-            return false;
-        }
+        clippedWallStart.x = startScreenX;
+        clippedWallEnd.x = endScreenX;
 
         projectedCeilingStart = (int)((long)relativeCeilingHeight * startDepthReciprocal >> 16);
         projectedFloorStart = (int)((long)relativeFloorHeight * startDepthReciprocal >> 16);
@@ -368,7 +385,8 @@ public class PortalRenderer {
 
         if (clipAndProjectWallSegment(transformedVertices[startVertexIndex],
                 transformedVertices[endVertexIndex],
-                relativeCeilingHeight, relativeFloorHeight, textureOffset)) {
+                relativeCeilingHeight, relativeFloorHeight, textureOffset,
+                LevelLoader.gameWorld.distanceOrderSectors)) {
 
             Point2D screenStart = clippedWallStart;
             Point2D screenEnd = clippedWallEnd;
@@ -380,7 +398,9 @@ public class PortalRenderer {
             int screenFloorStartY = (projectedFloorStart + HALF_VIEWPORT_HEIGHT_FP) >> 16;
             int screenFloorEndY = (projectedFloorEnd + HALF_VIEWPORT_HEIGHT_FP) >> 16;
 
-            int wallHeight = sectorData.ceilingHeight - sectorData.floorHeight;
+            int wallHeight = scaleWallHeight(
+                    sectorData.ceilingHeight - sectorData.floorHeight,
+                    surface.textureRepeatY);
             Texture wallTexture = LevelLoader.getTexture(surface.mainTextureId);
 
             int textureOffsetY = surface.textureOffsetY & 0xFFFF;
@@ -392,11 +412,15 @@ public class PortalRenderer {
             wallDef.markAsRendered();
 
             int textureOffsetX = (surface.textureOffsetX & 0xFFFF) << 16;
+            int textureStartU = scaleWallU(clippedTextureStartU, surface.textureRepeatX)
+                    + textureOffsetX;
+            int textureRangeU = scaleWallU(clippedTextureEndU - clippedTextureStartU,
+                    surface.textureRepeatX);
 
             drawWallColumn(sectorData, wallTexture, wallTexture,
                     screenStartX, screenCeilingStartY, screenFloorStartY, screenFloorStartY, screenFloorStartY, screenStart.y,
                     screenEndX, screenCeilingEndY, screenFloorEndY, screenFloorEndY, screenFloorEndY, screenEnd.y,
-                    clippedTextureStartU + textureOffsetX, clippedTextureEndU - clippedTextureStartU,
+                    textureStartU, textureRangeU,
                     adjustedTextureOffsetY, wallHeight, adjustedTextureOffsetY, wallHeight,
                     -cameraX, -cameraZ, viewAngle, relativeCeilingHeight, relativeFloorHeight);
         }
@@ -445,7 +469,8 @@ public class PortalRenderer {
 
         if (clipAndProjectWallSegment(transformedVertices[startVertexIndex],
                 transformedVertices[endVertexIndex],
-                frontCeilingHeight, frontFloorHeight, textureOffset)) {
+                frontCeilingHeight, frontFloorHeight, textureOffset,
+                LevelLoader.gameWorld.distanceOrderSectors)) {
 
             Point2D screenStart = clippedWallStart;
             Point2D screenEnd = clippedWallEnd;
@@ -463,8 +488,10 @@ public class PortalRenderer {
             int backFloorEndY = (MathUtils.fixedPointDivide(backFloorHeight, screenEnd.y) * HALF_VIEWPORT_WIDTH + HALF_VIEWPORT_HEIGHT_FP) >> 16;
 
             int upperWallHeight = sharedSkyCeiling ? 0
-                    : frontSector.ceilingHeight - backSector.ceilingHeight;
-            int lowerWallHeight = backSector.floorHeight - frontSector.floorHeight;
+                    : scaleWallHeight(frontSector.ceilingHeight - backSector.ceilingHeight,
+                            frontSurface.textureRepeatY);
+            int lowerWallHeight = scaleWallHeight(backSector.floorHeight - frontSector.floorHeight,
+                    frontSurface.textureRepeatY);
 
             Texture upperTexture = LevelLoader.getTexture(frontSurface.upperTextureId);
             Texture lowerTexture = LevelLoader.getTexture(frontSurface.lowerTextureId);
@@ -490,11 +517,15 @@ public class PortalRenderer {
             wallDef.markAsRendered();
 
             int textureOffsetX = (frontSurface.textureOffsetX & 0xFFFF) << 16;
+            int textureStartU = scaleWallU(clippedTextureStartU, frontSurface.textureRepeatX)
+                    + textureOffsetX;
+            int textureRangeU = scaleWallU(clippedTextureEndU - clippedTextureStartU,
+                    frontSurface.textureRepeatX);
 
             drawWallColumn(frontSector, upperTexture, lowerTexture,
                     screenStartX, frontCeilingStartY, backCeilingStartY, backFloorStartY, frontFloorStartY, screenStart.y,
                     screenEndX, frontCeilingEndY, backCeilingEndY, backFloorEndY, frontFloorEndY, screenEnd.y,
-                    clippedTextureStartU + textureOffsetX, clippedTextureEndU - clippedTextureStartU,
+                    textureStartU, textureRangeU,
                     upperTextureOffset, upperWallHeight, lowerTextureOffset, lowerWallHeight,
                     -cameraX, -cameraZ, viewAngle, frontCeilingHeight, frontFloorHeight);
         }
@@ -553,6 +584,46 @@ public class PortalRenderer {
         }
     }
 
+    private static void prepareBloodWallOrder(GameWorld world, Point2D[] transformedVertices) {
+        int count = world.wallSegments.length;
+        if (bloodWallOrder == null || bloodWallOrder.length != count) {
+            bloodWallOrder = new WallSegment[count];
+            bloodWallDepth = new int[count];
+        }
+        for (int i = 0; i < count; ++i) {
+            WallSegment segment = world.wallSegments[i];
+            bloodWallOrder[i] = segment;
+            Point2D start = transformedVertices[segment.startVertexIndex & 0xffff];
+            Point2D end = transformedVertices[segment.endVertexIndex & 0xffff];
+            int nearestDepth = start.y < end.y ? start.y : end.y;
+            bloodWallDepth[i] = nearestDepth < NEAR_CLIP_DISTANCE
+                    ? NEAR_CLIP_DISTANCE : nearestDepth;
+        }
+        if (count > 1) sortBloodWallOrder(0, count - 1);
+    }
+
+    private static void sortBloodWallOrder(int low, int high) {
+        int left = low;
+        int right = high;
+        int pivot = bloodWallDepth[(low + high) >>> 1];
+        while (left <= right) {
+            while (bloodWallDepth[left] < pivot) ++left;
+            while (bloodWallDepth[right] > pivot) --right;
+            if (left <= right) {
+                int depth = bloodWallDepth[left];
+                bloodWallDepth[left] = bloodWallDepth[right];
+                bloodWallDepth[right] = depth;
+                WallSegment segment = bloodWallOrder[left];
+                bloodWallOrder[left] = bloodWallOrder[right];
+                bloodWallOrder[right] = segment;
+                ++left;
+                --right;
+            }
+        }
+        if (low < right) sortBloodWallOrder(low, right);
+        if (left < high) sortBloodWallOrder(left, high);
+    }
+
     /**
      * Main rendering function that draws the entire visible world.
      *
@@ -562,11 +633,22 @@ public class PortalRenderer {
      * @param playerAngle Player view angle
      */
     static void renderWorld(int playerX, int playerY, int playerZ, int playerAngle) {
-        Point2D[] transformedVertices = LevelLoader.gameWorld.transformVertices(playerX, playerZ, playerAngle);
+        GameWorld world = LevelLoader.gameWorld;
+        if (world.distanceOrderSectors) {
+            // Blood's first-pass package has no authored sky texture. Clear
+            // uncovered spans so they do not expose stale/black pixels.
+            int clearColor = skyFlatColor;
+            for (int i = 0; i < screenBuffer.length; ++i) {
+                screenBuffer[i] = clearColor;
+            }
+        }
+        Point2D[] transformedVertices = world.transformVertices(playerX, playerZ, playerAngle);
 
         BSPNode.visibleSectorsCount = 0;
-        LevelLoader.gameWorld.getRootBSPNode().traverseBSP(LevelLoader.gameWorld.playerBody,
-                LevelLoader.gameWorld.getSectorDataAtPoint(playerX, playerZ));
+        if (!world.distanceOrderSectors) {
+            world.getRootBSPNode().traverseBSP(world.playerBody,
+                    world.getSectorDataAtPoint(playerX, playerZ));
+        }
 
         int cameraZFixed = playerZ << 8;
         int cameraXFixed = playerX << 8;
@@ -579,46 +661,52 @@ public class PortalRenderer {
         renderUtils.resetRenderer();
         Sector.resetClipArrays();
 
-        // Render walls for each visible sector
-        for (int sectorIndex = 0; sectorIndex < BSPNode.visibleSectorsCount; sectorIndex++) {
-            Sector currentSector = BSPNode.visibleSectorsList[sectorIndex];
-
-            if (sectorIndex > 0 && Sector.isRenderComplete()) {
-                BSPNode.visibleSectorsCount = sectorIndex;
-                break;
-            }
-
-            ensureClipHistory(sectorIndex);
-            short[] savedFloorClip = floorClipHistory[sectorIndex];
-            short[] savedCeilingClip = ceilingClipHistory[sectorIndex];
-
-            // Save current clip state.
-            System.arraycopy(Sector.floorClip, 0, savedFloorClip, 0, VIEWPORT_WIDTH);
-            System.arraycopy(Sector.ceilingClip, 0, savedCeilingClip, 0, VIEWPORT_WIDTH);
-
-            // Render all walls in sector
-            WallSegment[] walls = currentSector.walls;
-            for (int wallIndex = 0; wallIndex < walls.length; wallIndex++) {
-                renderWallSegment(walls[wallIndex], transformedVertices,
+        if (world.distanceOrderSectors) {
+            // The imported map's sector centroids do not form a real BSP.
+            // Sort its actual walls by camera-space depth so front surfaces
+            // update the clipping window before farther portal geometry.
+            prepareBloodWallOrder(world, transformedVertices);
+            for (int i = 0; i < bloodWallOrder.length; ++i) {
+                if (i > 0 && Sector.isRenderComplete()) break;
+                renderWallSegment(bloodWallOrder[i], transformedVertices,
                         cameraXFixed, playerY, cameraZFixed, doubleAngle);
+            }
+        } else {
+            // Native C3B levels carry a real BSP and render sector-by-sector.
+            for (int sectorIndex = 0; sectorIndex < BSPNode.visibleSectorsCount; sectorIndex++) {
+                Sector currentSector = BSPNode.visibleSectorsList[sectorIndex];
+                if (sectorIndex > 0 && Sector.isRenderComplete()) {
+                    BSPNode.visibleSectorsCount = sectorIndex;
+                    break;
+                }
+                ensureClipHistory(sectorIndex);
+                short[] savedFloorClip = floorClipHistory[sectorIndex];
+                short[] savedCeilingClip = ceilingClipHistory[sectorIndex];
+                System.arraycopy(Sector.floorClip, 0, savedFloorClip, 0, VIEWPORT_WIDTH);
+                System.arraycopy(Sector.ceilingClip, 0, savedCeilingClip, 0, VIEWPORT_WIDTH);
+                WallSegment[] walls = currentSector.walls;
+                for (int wallIndex = 0; wallIndex < walls.length; wallIndex++) {
+                    renderWallSegment(walls[wallIndex], transformedVertices,
+                            cameraXFixed, playerY, cameraZFixed, doubleAngle);
+                }
             }
         }
 
         // Render floor and ceiling spans
         renderUtils.renderAllSpans(sinAngle, cosAngle, -cameraXFixed, -cameraZFixed);
 
-        // Render dynamic objects in back-to-front order
-        for (int sectorIndex = BSPNode.visibleSectorsCount - 1; sectorIndex >= 0; sectorIndex--) {
-            Sector currentSector = BSPNode.visibleSectorsList[sectorIndex];
-
-            // Restore clip state for this sector.
-            System.arraycopy(floorClipHistory[sectorIndex], 0,
-                    Sector.floorClip, 0, VIEWPORT_WIDTH);
-            System.arraycopy(ceilingClipHistory[sectorIndex], 0,
-                    Sector.ceilingClip, 0, VIEWPORT_WIDTH);
-
-            renderDynamicObjects(currentSector, playerX, playerY, playerZ,
-                    (long)sinAngle, (long)cosAngle);
+        // Blood sprites are not in this first geometry build. Native C3B
+        // entities still use their recorded back-to-front sector ordering.
+        if (!world.distanceOrderSectors) {
+            for (int sectorIndex = BSPNode.visibleSectorsCount - 1; sectorIndex >= 0; sectorIndex--) {
+                Sector currentSector = BSPNode.visibleSectorsList[sectorIndex];
+                System.arraycopy(floorClipHistory[sectorIndex], 0,
+                        Sector.floorClip, 0, VIEWPORT_WIDTH);
+                System.arraycopy(ceilingClipHistory[sectorIndex], 0,
+                        Sector.ceilingClip, 0, VIEWPORT_WIDTH);
+                renderDynamicObjects(currentSector, playerX, playerY, playerZ,
+                        (long)sinAngle, (long)cosAngle);
+            }
         }
     }
 
@@ -802,6 +890,14 @@ public class PortalRenderer {
      * @param relativeCeiling     Relative ceiling height
      * @param relativeFloor       Relative floor height
      */
+    private static int scaleWallU(int value, int repeat) {
+        return (int)(((long)value * (long)repeat) / 8L);
+    }
+
+    private static int scaleWallHeight(int height, int repeat) {
+        return (int)(((long)height * (long)repeat) / 8L);
+    }
+
     private static void drawWallColumn(SectorData sectorData, Texture upperTexture, Texture lowerTexture,
                                        int startX, int ceilingStartY, int upperBottomStartY, int lowerTopStartY, int floorStartY, int startDepth,
                                        int endX, int ceilingEndY, int upperBottomEndY, int lowerTopEndY, int floorEndY, int endDepth,
@@ -910,7 +1006,8 @@ public class PortalRenderer {
 
                 // Draw upper wall or update floor span
                 if (ceilingY < upperBottomY) {
-                    drawWallTextureColumn(upperTexture.getPixelRowFast(textureColumn), textureColumn & 1,
+                    int upperColumn = upperTexture.getWrappedColumn(textureColumn);
+                    drawWallTextureColumn(upperTexture.getPixelRowFast(upperColumn), upperColumn & 1,
                             upperTexture.colorPalettes[effectiveLightLevel], column,
                             screenCeilingY, screenUpperBottomY, upperTextureOffsetV, upperWallHeight, upperTextureHeight);
 
@@ -935,7 +1032,8 @@ public class PortalRenderer {
 
                 // Draw lower wall
                 if (lowerTopY < floorY) {
-                    drawWallTextureColumn(lowerTexture.getPixelRowFast(textureColumn), textureColumn & 1,
+                    int lowerColumn = lowerTexture.getWrappedColumn(textureColumn);
+                    drawWallTextureColumn(lowerTexture.getPixelRowFast(lowerColumn), lowerColumn & 1,
                             lowerTexture.colorPalettes[effectiveLightLevel], column,
                             screenLowerTopY, screenFloorY, lowerTextureOffsetV, lowerWallHeight, lowerTextureHeight);
 
@@ -1318,8 +1416,9 @@ public class PortalRenderer {
                 ? ((wallHeight - 1) << 16) / columnHeight
                 : (wallHeight - 1) * reciprocalTable[columnHeight];
 
-        int textureMask = textureHeight - 1;
-        int textureV = (clippedTopY - topY) * textureStepV + ((textureOffsetV & textureMask) << 16);
+        int wrappedOffsetV = textureOffsetV % textureHeight;
+        if (wrappedOffsetV < 0) wrappedOffsetV += textureHeight;
+        int textureV = (clippedTopY - topY) * textureStepV + (wrappedOffsetV << 16);
         int[] buffer = screenBuffer;
 
         // Optimized loops for common texture heights
@@ -1367,7 +1466,17 @@ public class PortalRenderer {
                 return;
 
             default:
-                // Generic case - should not normally be reached
+                // Blood ART tiles include heights such as 8 and 32. Preserve
+                // their native texel grid instead of discarding the column.
+                for (int pixelIndex = startPixelIndex; pixelIndex <= endPixelIndex;
+                     pixelIndex += VIEWPORT_WIDTH) {
+                    int textureRow = (textureV >> 16) % textureHeight;
+                    if (textureRow < 0) textureRow += textureHeight;
+                    int packed = pixelData[textureRow] & 0xff;
+                    buffer[pixelIndex] = colorPalette[(pixelNibble == 0)
+                            ? (packed >> 4) : (packed & 15)];
+                    textureV += textureStepV;
+                }
                 return;
         }
     }

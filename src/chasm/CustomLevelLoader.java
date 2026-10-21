@@ -21,6 +21,7 @@ public final class CustomLevelLoader {
     // Header flags. C3B v1 reserved this byte; bit 0 moves entity records to
     // a UTF-8 INI sidecar and keeps the compiled binary geometry-only.
     private static final int HEADER_FLAG_EXTERNAL_ENTITIES = 1;
+    private static final int HEADER_FLAG_BLOOD_MAP = 2;
 
     // Per-sector flags, not C3B header flags.
     private static final int SECTOR_FLAG_CEILING_SKY = 1;
@@ -46,10 +47,11 @@ public final class CustomLevelLoader {
             int version = input.readUnsignedByte();
             if (version != VERSION) throw new IOException("Unsupported C3B version: " + version);
             int headerFlags = input.readUnsignedByte();
-            if ((headerFlags & ~HEADER_FLAG_EXTERNAL_ENTITIES) != 0) {
+            if ((headerFlags & ~(HEADER_FLAG_EXTERNAL_ENTITIES | HEADER_FLAG_BLOOD_MAP)) != 0) {
                 throw new IOException("Unsupported C3B header flags: " + headerFlags);
             }
             boolean externalEntities = (headerFlags & HEADER_FLAG_EXTERNAL_ENTITIES) != 0;
+            boolean bloodMap = (headerFlags & HEADER_FLAG_BLOOD_MAP) != 0;
             int rootNode = BinaryUtils.readShortLE(input);
 
             int vertexCount = readCount(input, "vertices");
@@ -88,6 +90,7 @@ public final class CustomLevelLoader {
             materials.installSkyTexture();
 
             GameWorld world = targetWorld != null ? targetWorld : new GameWorld();
+            world.distanceOrderSectors = bloodMap;
             Point2D[] vertices = new Point2D[vertexCount];
             for (int i = 0; i < vertexCount; ++i) {
                 vertices[i] = new Point2D(BinaryUtils.readShortLE(input) << 16,
@@ -118,15 +121,28 @@ public final class CustomLevelLoader {
 
             WallSurface[] surfaces = new WallSurface[surfaceCount];
             for (int i = 0; i < surfaceCount; ++i) {
-                short offsetX = BinaryUtils.readShortLE(input);
-                short offsetY = BinaryUtils.readShortLE(input);
+                short packedX = BinaryUtils.readShortLE(input);
+                short packedY = BinaryUtils.readShortLE(input);
                 byte upper = input.readByte();
                 byte lower = input.readByte();
                 byte main = input.readByte();
                 input.readByte(); // reserved
                 int sectorId = BinaryUtils.readShortLE(input) & 0xFFFF;
                 if (sectorId >= sectorCount) throw new IOException("Surface sector out of range");
-                surfaces[i] = new WallSurface(upper, main, lower, sectorId, offsetX, offsetY);
+                short offsetX = packedX;
+                short offsetY = packedY;
+                int repeatX = 8;
+                int repeatY = 8;
+                if (bloodMap) {
+                    offsetX = (short)(packedX & 0xff);
+                    offsetY = (short)(packedY & 0xff);
+                    repeatX = (packedX >>> 8) & 0xff;
+                    repeatY = (packedY >>> 8) & 0xff;
+                    if (repeatX == 0) repeatX = 8;
+                    if (repeatY == 0) repeatY = 8;
+                }
+                surfaces[i] = new WallSurface(upper, main, lower, sectorId,
+                        offsetX, offsetY, repeatX, repeatY);
             }
             world.wallSurfaces = surfaces;
 

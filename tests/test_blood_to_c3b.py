@@ -24,15 +24,18 @@ class BloodToC3BTests(unittest.TestCase):
             next_wall = 7 if i == 1 else (1 if i == 7 else -1)
             walls.append({'x': x, 'y': y, 'point2': (i // 4) * 4 + ((i + 1) % 4),
                           'tile': 20, 'next_sector': next_sector,
-                          'next_wall': next_wall, 'x_pan': 0, 'y_pan': 0})
+                          'next_wall': next_wall, 'x_pan': 64 if i == 0 else 0,
+                          'y_pan': 128 if i == 0 else 0,
+                          'x_repeat': 4 if i == 0 else 8,
+                          'y_repeat': 16 if i == 0 else 8})
         map_data = {'version': 0x0700, 'map_revision': 1,
                     'start': {'x': 1024, 'y': 1024, 'z': 0, 'angle': 0, 'sector': 0},
                     'sectors': sectors, 'walls': walls, 'sprites': []}
         tile_index = {
             10: {'id': 10, 'width': 64, 'height': 64,
                  'pixels': bytes([4]) * 4096},
-            20: {'id': 20, 'width': 64, 'height': 64,
-                 'pixels': bytes([7]) * 4096},
+            20: {'id': 20, 'width': 48, 'height': 32,
+                 'pixels': bytes([7]) * (48 * 32)},
         }
         palette = [(i, i, i) for i in range(256)]
         with tempfile.TemporaryDirectory() as folder:
@@ -40,10 +43,13 @@ class BloodToC3BTests(unittest.TestCase):
             c3b = Path(folder) / 'blood/levels/test.c3b'
             data = c3b.read_bytes()
             self.assertEqual(data[:4], b'C3B1')
+            self.assertEqual(data[5], 2)  # Blood wall repeat/pan format flag
             self.assertEqual(report['sectors'], 2)
             self.assertEqual(report['wall_materials'], 1)
             self.assertEqual(report['flat_materials'], 1)
-            self.assertEqual(Path(folder, 'blood/textures/test/w001.bmp').read_bytes()[:2], b'BM')
+            wall_bmp = Path(folder, 'blood/textures/test/w001.bmp').read_bytes()
+            self.assertEqual(wall_bmp[:2], b'BM')
+            self.assertEqual(struct.unpack_from('<ii', wall_bmp, 18), (48, 32))
 
             # C3B header counts are little-endian: V, W, objects, surfaces,
             # sectors, BSP nodes, leaves, segments.
@@ -59,6 +65,11 @@ class BloodToC3BTests(unittest.TestCase):
             object_offset = 26 + material_length + counts[0] * 4 + counts[1] * 12
             self.assertEqual(struct.unpack_from('<5h', data, object_offset),
                              (16, 16, 0, 1, 0))
+            surface_offset = object_offset + counts[2] * 10
+            # Repeat occupies the high byte; horizontal pan is in texels and
+            # vertical pan is converted from Build's fractional encoding.
+            self.assertEqual(struct.unpack_from('<HH', data, surface_offset),
+                             (0x0440, 0x1010))
 
             # Verify every fixed-record region ends exactly at the PVS block,
             # matching CustomLevelLoader's little-endian C3B1 read order.

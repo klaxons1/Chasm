@@ -92,8 +92,16 @@ public final class Texture {
      * @param row Row index
      * @return Pixel data for the requested row
      */
+    public final int getWrappedColumn(int column) {
+        if ((this.width & (this.width - 1)) == 0) {
+            return column & this.widthMask;
+        }
+        int wrapped = column % this.width;
+        return wrapped < 0 ? wrapped + this.width : wrapped;
+    }
+
     public final byte[] getPixelRowFast(int row) {
-        return this.pixelData[(row & this.widthMask) >> 1];
+        return this.pixelData[getWrappedColumn(row) >> 1];
     }
 
     /**

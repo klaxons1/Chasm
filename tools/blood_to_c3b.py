@@ -27,7 +27,7 @@ except ImportError:
 
 
 HORIZONTAL_DIVISOR = 64
-VERTICAL_DIVISOR = 2048
+VERTICAL_DIVISOR = 1024
 
 
 def _write_bmp4(path, width, height, indices, rgb_palette):
@@ -90,16 +90,16 @@ def _tile_pixels(tile, palette, width, height):
     return out
 
 
-def _nearest_power_of_two(value, max_value=128):
-    options = [2, 4, 8, 16, 32, 64, 128]
-    return min((v for v in options if v <= max_value), key=lambda v: abs(v - value))
-
-
 def _wall_dimensions(tile):
-    width = _nearest_power_of_two(tile['width'])
-    heights = (16, 64, 128)
-    height = min(heights, key=lambda v: abs(v - tile['height']))
-    return width, height
+    # Preserve ART texel dimensions. The runtime wraps non-power-of-two widths
+    # and samples nonstandard heights in a generic path, so resampling here
+    # would distort the authored material and its Build repeat scale.
+    return tile['width'], tile['height']
+
+
+def _wall_vertical_pan_pixels(pan, dimension):
+    # Build stores vertical panning as a fraction of the ART tile height.
+    return (int(pan) * int(dimension)) >> 8
 
 
 def _art_tile_index(art_data):
@@ -192,6 +192,11 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
             segments_by_sector[sector_id].append(wall_id)
     if any(sector_id < 0 for sector_id in sector_for_wall):
         raise BloodAssetError('%s contains walls not owned by a sector' % map_name)
+    # Build/Blood stores loops with the opposite winding from Chasm's C3B
+    # sector leaves. Reverse each loop before emission; the renderer treats
+    # front-facing segment endpoint order as significant for projection.
+    for wall_ids in segments_by_sector:
+        wall_ids.reverse()
     if len(vertices) > 32767:
         raise BloodAssetError('%s exceeds C3B vertex limit' % map_name)
 
@@ -201,15 +206,27 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         sector_id = sector_for_wall[wall_id]
         wall_slot = wall_slots.get(wall['tile'], 0)
         front_surface = len(surfaces)
-        surfaces.append((wall_slot, sector_id, wall.get('x_pan', 0), wall.get('y_pan', 0)))
+        wall_tile = tile_index.get(wall['tile'])
+        wall_height = wall_tile['height'] if wall_tile is not None else 64
+        surfaces.append((wall_slot, sector_id,
+                         wall.get('x_pan', 0) & 0xff,
+                         _wall_vertical_pan_pixels(wall.get('y_pan', 0), wall_height),
+                         wall.get('x_repeat', 8) or 8, wall.get('y_repeat', 8) or 8))
         neighbor_id = wall['next_sector']
         back_surface = -1
         if 0 <= neighbor_id < sector_count:
             back_surface = len(surfaces)
             next_wall = wall['next_wall']
-            back_tile = map_data['walls'][next_wall]['tile'] if 0 <= next_wall < wall_count else wall['tile']
+            back_wall = map_data['walls'][next_wall] if 0 <= next_wall < wall_count else wall
+            back_tile = back_wall['tile']
             back_slot = wall_slots.get(back_tile, wall_slot)
-            surfaces.append((back_slot, neighbor_id, wall.get('x_pan', 0), wall.get('y_pan', 0)))
+            back_art_tile = tile_index.get(back_tile)
+            back_height = back_art_tile['height'] if back_art_tile is not None else wall_height
+            surfaces.append((back_slot, neighbor_id,
+                             back_wall.get('x_pan', 0) & 0xff,
+                             _wall_vertical_pan_pixels(back_wall.get('y_pan', 0), back_height),
+                             back_wall.get('x_repeat', 8) or 8,
+                             back_wall.get('y_repeat', 8) or 8))
         definitions.append((get_vertex(wall_id), get_vertex(wall['point2']),
                             front_surface, back_surface,
                             4 if back_surface >= 0 else 1))
@@ -281,7 +298,9 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
     output_level.parent.mkdir(parents=True, exist_ok=True)
     with output_level.open('wb') as out:
         out.write(b'C3B1')
-        out.write(bytes((1, 0)))
+        # Header bit 1 marks Blood-specific packed pan/repeat fields and
+        # distance-ordered sector rendering.
+        out.write(bytes((1, 2)))
         out.write(_i16(root))
         for count in (len(vertices), len(definitions), 1, len(surfaces), sector_count,
                       len(nodes), sector_count, wall_count):
@@ -306,11 +325,9 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         out.write(_i16((spawn['angle'] * 2) & 4095))
         out.write(_i16(1))  # world-origin object type
         out.write(_i16(0))
-        for wall_ids in segments_by_sector:
-            pass
-        for surface_slot, sector_id, xpan, ypan in surfaces:
-            out.write(_i16(xpan))
-            out.write(_i16(ypan))
+        for surface_slot, sector_id, xpan, ypan, xrepeat, yrepeat in surfaces:
+            out.write(_u16(((xrepeat & 0xff) << 8) | (xpan & 0xff)))
+            out.write(_u16(((yrepeat & 0xff) << 8) | (ypan & 0xff)))
             out.write(bytes((surface_slot, surface_slot, surface_slot, 0)))
             out.write(_u16(sector_id))
         for floor_h, ceiling_h, floor_slot, ceiling_slot, light, flags, tag, kind in sectors:
@@ -335,11 +352,17 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         for sector_id, wall_ids in enumerate(segments_by_sector):
             for wall_id in wall_ids:
                 wall = map_data['walls'][wall_id]
-                out.write(_i16(get_vertex(wall_id)))
+                # PortalRenderer projects front-facing segments left-to-right.
+                # Blood's Build winding is opposite the C3B front-face winding,
+                # so reverse segment endpoints while leaving the collision wall
+                # definition and the polygon's cyclic ordering intact.
                 out.write(_i16(get_vertex(wall['point2'])))
+                out.write(_i16(get_vertex(wall_id)))
                 out.write(_i16(wall_id))
                 out.write(b'\0')  # front-facing record for this sector's wall
-                out.write(_i16(wall.get('x_pan', 0)))
+                # Wall panning is carried once by its surface; do not add it a
+                # second time through WallSegment.textureOffset.
+                out.write(_i16(0))
         out.write(struct.pack('<I', len(pvs)))
         out.write(pvs)
 

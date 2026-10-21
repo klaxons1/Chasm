@@ -212,11 +212,8 @@ public final class CustomMaterialSet {
         BMPLoader bmp = BMPLoader.loadBMP(path);
         validatePaletteIndices(bmp, path);
 
-        if (!isPowerOfTwo(bmp.width) || bmp.width < 2) {
-            throw new IOException("Wall width must be a power of two: " + path);
-        }
-        if (bmp.height != 16 && bmp.height != 64 && bmp.height != 128) {
-            throw new IOException("Wall height must be 16, 64 or 128: " + path);
+        if (bmp.width < 1 || bmp.width > 512 || bmp.height < 1 || bmp.height > 512) {
+            throw new IOException("Wall dimensions must be 1..512: " + path);
         }
 
         Texture texture = new Texture(slot, bmp.width, bmp.height, 0, 0, first16Colors(bmp.palette));
@@ -239,7 +236,16 @@ public final class CustomMaterialSet {
             throw new IOException("Flat texture must be 64x64: " + path);
         }
 
-        Sprite sprite = new Sprite(slot, bmp.indices);
+        // Custom BMP pixels are row-major. Sprite's legacy flat constructor
+        // accepts Build column-major texels before rotating them for the span
+        // renderer, so restore that source layout to avoid transposed floors.
+        byte[] columnMajor = new byte[bmp.indices.length];
+        for (int y = 0; y < bmp.height; ++y) {
+            for (int x = 0; x < bmp.width; ++x) {
+                columnMajor[x * bmp.height + y] = bmp.indices[y * bmp.width + x];
+            }
+        }
+        Sprite sprite = new Sprite(slot, columnMajor);
         sprite.colorPalettes = Texture.createColorPalettes(first16Colors(bmp.palette));
         sprite.buildFlatColors();
         return sprite;
@@ -293,10 +299,6 @@ public final class CustomMaterialSet {
         int[] colors = new int[16];
         System.arraycopy(source, 0, colors, 0, 16);
         return colors;
-    }
-
-    private static boolean isPowerOfTwo(int value) {
-        return (value & (value - 1)) == 0;
     }
 
     private static Texture[] parseWallAnimation(String value, Texture[] textures, int targetSlot)

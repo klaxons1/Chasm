@@ -12,6 +12,8 @@ public final class WallSurface {
 
     public short textureOffsetX;   // Horizontal texture offset (for switches, animated walls)
     public short textureOffsetY;   // Vertical texture offset
+    public short textureRepeatX;   // Build wall repeat (8 = native horizontal scale)
+    public short textureRepeatY;   // Build wall repeat (8 = native vertical scale)
 
     /**
      * Constructor called when loading level data.
@@ -25,12 +27,20 @@ public final class WallSurface {
      */
     public WallSurface(byte upperTex, byte mainTex, byte lowerTex,
                        int linkId, short offsetX, short offsetY) {
+        this(upperTex, mainTex, lowerTex, linkId, offsetX, offsetY, 8, 8);
+    }
+
+    public WallSurface(byte upperTex, byte mainTex, byte lowerTex,
+                       int linkId, short offsetX, short offsetY,
+                       int repeatX, int repeatY) {
         this.upperTextureId = upperTex;
         this.mainTextureId  = mainTex;
         this.lowerTextureId = lowerTex;
         this.sectorLinkId   = (short)linkId;
         this.textureOffsetX = offsetX;
         this.textureOffsetY = offsetY;
+        this.textureRepeatX = (short)repeatX;
+        this.textureRepeatY = (short)repeatY;
     }
 
     /**

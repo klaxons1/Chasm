@@ -43,6 +43,7 @@ def make_v7_map():
         struct.pack_into('<ii', wall, 0, x, y)
         struct.pack_into('<hhh', wall, 8, (i + 1) % 3, -1, -1)
         struct.pack_into('<H', wall, 16, 20 + i)
+        wall[22:26] = bytes((4, 16, 64, 128))
         struct.pack_into('<h', wall, 30, -1)
         walls.extend(map_xor(wall, (map_revision * 40) | key))
 
@@ -60,6 +61,9 @@ class BloodAssetTests(unittest.TestCase):
         self.assertEqual(len(level['walls']), 3)
         self.assertEqual(level['tile_ids'], [10, 11, 20, 21, 22])
         self.assertEqual(level['walls'][1]['x'], 1024)
+        self.assertEqual((level['walls'][1]['x_repeat'], level['walls'][1]['y_repeat'],
+                          level['walls'][1]['x_pan'], level['walls'][1]['y_pan']),
+                         (4, 16, 64, 128))
 
     def test_read_art_column_major_pixels(self):
         # Tile 7 is a 2x2 image: ART stores each column top-to-bottom.
