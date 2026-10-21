@@ -142,9 +142,9 @@ public final class BloodCanvas extends GameCanvas implements Runnable {
             g.setFont(Font.getFont(Font.FACE_SYSTEM, Font.STYLE_BOLD, Font.SIZE_SMALL));
             g.drawString("BLOOD J2ME", width / 2, height / 3,
                     Graphics.TOP | Graphics.HCENTER);
-            g.setFont(Font.getFont(Font.FACE_SYSTEM, Font.STYLE_PLAIN, Font.SIZE_SMALL));
-            g.drawString(loadError, width / 2, height / 2,
-                    Graphics.TOP | Graphics.HCENTER);
+            Font errorFont = Font.getFont(Font.FACE_SYSTEM, Font.STYLE_PLAIN, Font.SIZE_SMALL);
+            g.setFont(errorFont);
+            drawWrappedError(g, errorFont, width, height / 2);
         }
         if (paused) {
             g.setColor(0x000000);
@@ -154,6 +154,29 @@ public final class BloodCanvas extends GameCanvas implements Runnable {
                     Graphics.TOP | Graphics.HCENTER);
         }
         flushGraphics();
+    }
+
+    private void drawWrappedError(Graphics g, Font font, int width, int topY) {
+        int maxWidth = width - 12;
+        int lineY = topY;
+        StringBuffer line = new StringBuffer();
+        for (int i = 0; i < loadError.length(); i++) {
+            char ch = loadError.charAt(i);
+            line.append(ch);
+            if (font.stringWidth(line.toString()) > maxWidth && line.length() > 1) {
+                line.setLength(line.length() - 1);
+                g.drawString(line.toString(), width / 2, lineY,
+                        Graphics.TOP | Graphics.HCENTER);
+                lineY += font.getHeight() + 2;
+                line.setLength(0);
+                if (ch != ' ') line.append(ch);
+            }
+            if (lineY > getHeight() - font.getHeight()) return;
+        }
+        if (line.length() > 0) {
+            g.drawString(line.toString(), width / 2, lineY,
+                    Graphics.TOP | Graphics.HCENTER);
+        }
     }
 
     private void drawViewport(Graphics g, int width, int height) {
