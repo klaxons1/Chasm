@@ -56,6 +56,9 @@ class BloodToC3BTests(unittest.TestCase):
             material_length = struct.unpack_from('<H', data, 24)[0]
             material_path = data[26:26 + material_length].decode('utf-8')
             self.assertEqual(material_path, '/blood/textures/test/materials.c3m')
+            object_offset = 26 + material_length + counts[0] * 4 + counts[1] * 12
+            self.assertEqual(struct.unpack_from('<5h', data, object_offset),
+                             (16, 16, 0, 1, 0))
 
             # Verify every fixed-record region ends exactly at the PVS block,
             # matching CustomLevelLoader's little-endian C3B1 read order.

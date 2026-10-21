@@ -15,6 +15,8 @@ import java.io.InputStream;
 public final class CustomLevelLoader {
 
     private static final int VERSION = 1;
+    /** Last load failure, exposed for diagnostics on small J2ME screens. */
+    public static String lastError;
 
     // Header flags. C3B v1 reserved this byte; bit 0 moves entity records to
     // a UTF-8 INI sidecar and keeps the compiled binary geometry-only.
@@ -33,6 +35,7 @@ public final class CustomLevelLoader {
 
     public static boolean load(String levelPath, boolean shouldLoadObjects, GameWorld targetWorld) {
         DataInputStream input = null;
+        lastError = null;
         try {
             LevelLoader.prepareCustomMapLoad();
             InputStream stream = CustomLevelLoader.class.getResourceAsStream(levelPath);
@@ -235,8 +238,10 @@ public final class CustomLevelLoader {
             LevelLoader.finishCustomMapLoad(world);
             return true;
         } catch (Exception e) {
+            lastError = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
             return false;
         } catch (OutOfMemoryError e) {
+            lastError = "Not enough memory to load level";
             return false;
         } finally {
             if (input != null) {

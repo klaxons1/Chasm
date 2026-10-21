@@ -41,7 +41,9 @@ public final class BloodCanvas extends GameCanvas implements Runnable {
         mapName = normalizeMapName(requestedMap);
         String path = "/blood/levels/" + mapName + ".c3b";
         if (!CustomLevelLoader.load(path, false, world)) {
-            loadError = "Could not load " + mapName + ". Check the Blood asset build.";
+            String detail = CustomLevelLoader.lastError;
+            loadError = "Could not load " + mapName
+                    + (detail == null ? ". Check the Blood asset build." : ": " + detail);
         } else if (world.worldOrigin != null) {
             world.enablePolygonSectorLookup();
             world.playerBody.copyFrom(world.worldOrigin);

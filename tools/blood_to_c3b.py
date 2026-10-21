@@ -289,12 +289,6 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         material_path = ('/blood/textures/' + resource_map_name + '/materials.c3m').encode('utf-8')
         out.write(_u16(len(material_path)))
         out.write(material_path)
-        spawn = map_data['start']
-        out.write(_i16(int(round(spawn['x'] / float(HORIZONTAL_DIVISOR)))))
-        out.write(_i16(int(round(spawn['y'] / float(HORIZONTAL_DIVISOR)))))
-        out.write(_i16((spawn['angle'] * 2) & 4095))
-        out.write(_i16(1))  # world-origin object type
-        out.write(_i16(0))
         for x, z in vertices:
             out.write(_i16(x))
             out.write(_i16(z))
@@ -304,6 +298,14 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
             out.write(_i16(front))
             out.write(_i16(back))
             out.write(bytes((flags & 0xff, 0, 0, 0)))
+        # C3B1 stores inline world-origin objects after vertices and wall
+        # definitions, exactly where CustomLevelLoader consumes them.
+        spawn = map_data['start']
+        out.write(_i16(int(round(spawn['x'] / float(HORIZONTAL_DIVISOR)))))
+        out.write(_i16(int(round(spawn['y'] / float(HORIZONTAL_DIVISOR)))))
+        out.write(_i16((spawn['angle'] * 2) & 4095))
+        out.write(_i16(1))  # world-origin object type
+        out.write(_i16(0))
         for wall_ids in segments_by_sector:
             pass
         for surface_slot, sector_id, xpan, ypan in surfaces:
