@@ -13,67 +13,20 @@ Usage:
 """
 import argparse
 import json
-import math
 import struct
 import sys
 from pathlib import Path
 
 try:
     from .blood_assets import (BloodAssetError, _palette_from_rff, _load_archive_entries,
-                               decode_blood_map, read_art, read_rff)
+                               decode_blood_map, read_art, read_rff, write_bmp8)
 except ImportError:
     from blood_assets import (BloodAssetError, _palette_from_rff, _load_archive_entries,
-                              decode_blood_map, read_art, read_rff)
+                              decode_blood_map, read_art, read_rff, write_bmp8)
 
 
 HORIZONTAL_DIVISOR = 64
 VERTICAL_DIVISOR = 1024
-
-
-def _write_bmp4(path, width, height, indices, rgb_palette):
-    """Write a non-compressed 4-bit indexed BMP accepted by BMPLoader."""
-    if width <= 0 or height <= 0 or len(indices) != width * height:
-        raise BloodAssetError('bad output bitmap dimensions')
-    freq = {}
-    for index in indices:
-        freq[index] = freq.get(index, 0) + 1
-    # Keep the most-used original palette indices. A per-tile 16-color palette
-    # is a practical feature-phone compromise; pixel indices remain exact for
-    # those colors and other colors select their nearest retained RGB entry.
-    selected = sorted(freq, key=lambda value: (-freq[value], value))[:16]
-    while len(selected) < 16:
-        selected.append(0)
-    selected_rgb = [rgb_palette[index] for index in selected]
-    remap = {}
-    for src_index in range(256):
-        sr, sg, sb = rgb_palette[src_index]
-        best, best_distance = 0, 1 << 62
-        for out_index, (r, g, b) in enumerate(selected_rgb):
-            distance = (sr-r)*(sr-r) + (sg-g)*(sg-g) + (sb-b)*(sb-b)
-            if distance < best_distance:
-                best, best_distance = out_index, distance
-        remap[src_index] = best
-
-    row_bytes = (width + 1) // 2
-    stride = (row_bytes + 3) & ~3
-    raster = bytearray()
-    for y in range(height - 1, -1, -1):
-        row = bytearray()
-        for x in range(0, width, 2):
-            high = remap[indices[y * width + x]]
-            low = remap[indices[y * width + x + 1]] if x + 1 < width else 0
-            row.append((high << 4) | low)
-        row.extend(b'\0' * (stride - len(row)))
-        raster.extend(row)
-
-    palette_data = bytearray()
-    for r, g, b in selected_rgb:
-        palette_data.extend((b, g, r, 0))
-    offset = 14 + 40 + len(palette_data)
-    header = struct.pack('<2sIHHI', b'BM', offset + len(raster), 0, 0, offset)
-    info = struct.pack('<IiiHHIIiiII', 40, width, height, 1, 4, 0,
-                       len(raster), 2835, 2835, 16, 16)
-    Path(path).write_bytes(header + info + palette_data + raster)
 
 
 def _tile_pixels(tile, palette, width, height):
@@ -102,6 +55,12 @@ def _wall_vertical_pan_pixels(pan, dimension):
     return (int(pan) * int(dimension)) >> 8
 
 
+def _blood_light_level(shade):
+    # Blood shade 0 is the unmodified BLOOD.PAL lookup. Center it on Chasm's
+    # neutral exposure (level 8); positive shade darkens, negative shade brightens.
+    return max(0, min(15, 8 - int(shade) // 8))
+
+
 def _art_tile_index(art_data):
     result = {}
     for name, data in sorted(art_data.items()):
@@ -121,6 +80,32 @@ def _i16(value):
     if value < -32768 or value > 32767:
         raise BloodAssetError('coordinate/index exceeds C3B signed-short range: %d' % value)
     return struct.pack('<h', value)
+
+
+def stack_sector_links(map_data):
+    """Return Blood upper/lower stack sector pairs from linked marker sprites."""
+    sector_count = len(map_data['sectors'])
+    upper = [-1] * sector_count
+    lower = [-1] * sector_count
+    uppers = {}
+    lowers = {}
+    for sprite in map_data.get('sprites', []):
+        marker_type = sprite.get('lotag')
+        if marker_type not in (11, 12) or sprite.get('extra', 0) <= 0:
+            continue
+        sector_id = sprite.get('sector', -1)
+        if sector_id < 0 or sector_id >= sector_count:
+            continue
+        marker_id = sprite.get('data1', 0)
+        markers = uppers if marker_type == 11 else lowers
+        markers.setdefault(marker_id, []).append(sector_id)
+
+    for marker_id, upper_sectors in uppers.items():
+        lower_sectors = lowers.get(marker_id, [])
+        for upper_sector, lower_sector in zip(upper_sectors, lower_sectors):
+            upper[upper_sector] = lower_sector
+            lower[lower_sector] = upper_sector
+    return upper, lower
 
 
 def compile_map(map_data, tile_index, palette, output_dir, map_name):
@@ -153,7 +138,7 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         width, height = _wall_dimensions(tile)
         pixels = _tile_pixels(tile, palette, width, height)
         filename = 'w%03d.bmp' % slot
-        _write_bmp4(material_dir / filename, width, height, pixels, palette)
+        write_bmp8(material_dir / filename, width, height, pixels, palette)
         material_lines.append('wall.%d=%s' % (slot, filename))
     for tile_id, slot in flat_slots.items():
         tile = tile_index.get(tile_id)
@@ -161,7 +146,7 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
             raise BloodAssetError('ART tile %d referenced by %s is missing' % (tile_id, map_name))
         pixels = _tile_pixels(tile, palette, 64, 64)
         filename = 'f%03d.bmp' % slot
-        _write_bmp4(material_dir / filename, 64, 64, pixels, palette)
+        write_bmp8(material_dir / filename, 64, 64, pixels, palette)
         material_lines.append('flat.%d=%s' % (slot, filename))
     manifest = material_dir / 'materials.c3m'
     manifest.write_text('\n'.join(material_lines) + '\n', encoding='utf-8')
@@ -211,7 +196,8 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         surfaces.append((wall_slot, sector_id,
                          wall.get('x_pan', 0) & 0xff,
                          _wall_vertical_pan_pixels(wall.get('y_pan', 0), wall_height),
-                         wall.get('x_repeat', 8) or 8, wall.get('y_repeat', 8) or 8))
+                         wall.get('x_repeat', 8) or 8, wall.get('y_repeat', 8) or 8,
+                         _blood_light_level(wall.get('shade', 0))))
         neighbor_id = wall['next_sector']
         back_surface = -1
         if 0 <= neighbor_id < sector_count:
@@ -226,7 +212,8 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
                              back_wall.get('x_pan', 0) & 0xff,
                              _wall_vertical_pan_pixels(back_wall.get('y_pan', 0), back_height),
                              back_wall.get('x_repeat', 8) or 8,
-                             back_wall.get('y_repeat', 8) or 8))
+                             back_wall.get('y_repeat', 8) or 8,
+                             _blood_light_level(back_wall.get('shade', 0))))
         definitions.append((get_vertex(wall_id), get_vertex(wall['point2']),
                             front_surface, back_surface,
                             4 if back_surface >= 0 else 1))
@@ -285,9 +272,12 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         floor_slot = flat_slots.get(sector['floor_tile'], 0)
         ceiling_slot = flat_slots.get(sector['ceiling_tile'], 0)
         flags = (1 if sector['ceiling_flags'] & 1 else 0) | (2 if sector['floor_flags'] & 1 else 0)
-        light = max(0, min(15, 12 - sector['floor_shade'] // 8))
+        light = _blood_light_level(sector['floor_shade'])
         sectors.append((floor_h, ceiling_h, floor_slot, ceiling_slot, light, flags,
                         sector['lotag'], 0))
+
+    upper_stack, lower_stack = stack_sector_links(map_data)
+    has_stack_links = any(sector >= 0 for sector in upper_stack)
 
     # All pairs are visible in this first pass so distant portal-connected
     # sectors are never lost to an incomplete hand-built visibility solution.
@@ -299,8 +289,9 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
     with output_level.open('wb') as out:
         out.write(b'C3B1')
         # Header bit 1 marks Blood-specific packed pan/repeat fields and
-        # distance-ordered sector rendering.
-        out.write(bytes((1, 2)))
+        # distance-ordered sector rendering; bit 2 adds per-sector upper/lower
+        # room-over-room links after the sector records.
+        out.write(bytes((1, 2 | (4 if has_stack_links else 0))))
         out.write(_i16(root))
         for count in (len(vertices), len(definitions), 1, len(surfaces), sector_count,
                       len(nodes), sector_count, wall_count):
@@ -324,11 +315,11 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
         out.write(_i16(int(round(spawn['y'] / float(HORIZONTAL_DIVISOR)))))
         out.write(_i16((spawn['angle'] * 2) & 4095))
         out.write(_i16(1))  # world-origin object type
-        out.write(_i16(0))
-        for surface_slot, sector_id, xpan, ypan, xrepeat, yrepeat in surfaces:
+        out.write(_i16(spawn.get('sector', 0)))  # Blood start-sector hint
+        for surface_slot, sector_id, xpan, ypan, xrepeat, yrepeat, wall_light in surfaces:
             out.write(_u16(((xrepeat & 0xff) << 8) | (xpan & 0xff)))
             out.write(_u16(((yrepeat & 0xff) << 8) | (ypan & 0xff)))
-            out.write(bytes((surface_slot, surface_slot, surface_slot, 0)))
+            out.write(bytes((surface_slot, surface_slot, surface_slot, wall_light)))
             out.write(_u16(sector_id))
         for floor_h, ceiling_h, floor_slot, ceiling_slot, light, flags, tag, kind in sectors:
             out.write(_i16(floor_h))
@@ -336,6 +327,10 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
             out.write(bytes((floor_slot, ceiling_slot, light, flags)))
             out.write(_i16(tag))
             out.write(_i16(kind))
+        if has_stack_links:
+            for sector_id in range(sector_count):
+                out.write(_i16(upper_stack[sector_id]))
+                out.write(_i16(lower_stack[sector_id]))
         for start_x, start_z, delta_x, delta_z, front, back in nodes:
             out.write(_i16(start_x))
             out.write(_i16(start_z))
@@ -371,6 +366,7 @@ def compile_map(map_data, tile_index, palette, output_dir, map_name):
               'sectors': sector_count, 'walls': wall_count,
               'vertices': len(vertices), 'wall_materials': len(wall_slots),
               'flat_materials': len(flat_slots), 'sprites_skipped': len(map_data['sprites']),
+              'room_over_room_links': sum(1 for sector in upper_stack if sector >= 0),
               'c3b': str(output_level.relative_to(output_dir)),
               'texture_ids': {'wall': wall_slots, 'flat': flat_slots}}
     (level_dir / (Path(map_name).stem.lower() + '.json')).write_text(

@@ -14,6 +14,7 @@ public final class WallSurface {
     public short textureOffsetY;   // Vertical texture offset
     public short textureRepeatX;   // Build wall repeat (8 = native horizontal scale)
     public short textureRepeatY;   // Build wall repeat (8 = native vertical scale)
+    public byte lightLevel = -1;   // Optional per-wall light (0..15), -1 inherits sector
 
     /**
      * Constructor called when loading level data.
@@ -33,6 +34,13 @@ public final class WallSurface {
     public WallSurface(byte upperTex, byte mainTex, byte lowerTex,
                        int linkId, short offsetX, short offsetY,
                        int repeatX, int repeatY) {
+        this(upperTex, mainTex, lowerTex, linkId, offsetX, offsetY,
+                repeatX, repeatY, -1);
+    }
+
+    public WallSurface(byte upperTex, byte mainTex, byte lowerTex,
+                       int linkId, short offsetX, short offsetY,
+                       int repeatX, int repeatY, int lightLevel) {
         this.upperTextureId = upperTex;
         this.mainTextureId  = mainTex;
         this.lowerTextureId = lowerTex;
@@ -41,6 +49,7 @@ public final class WallSurface {
         this.textureOffsetY = offsetY;
         this.textureRepeatX = (short)repeatX;
         this.textureRepeatY = (short)repeatY;
+        this.lightLevel = (byte)lightLevel;
     }
 
     /**

@@ -19,6 +19,13 @@ public final class GameWorld {
     private Point2D[] transformedVertices;
     public WallDefinition[] wallDefinitions;
     public SectorData[] sectors;
+    /** Blood room-over-room counterpart sector IDs, or -1 when unlinked. */
+    public short[] upperStackSector;
+    public short[] lowerStackSector;
+    /** MAP start sector used to disambiguate overlapping Blood polygons. */
+    public short bloodStartSector = -1;
+    public short bloodActiveSector = -1;
+    private boolean[] bloodHiddenStackSectors;
     public WallSurface[] wallSurfaces;
     public Transform3D worldOrigin;
     public BSPNode[] bspNodes;
@@ -314,6 +321,19 @@ public final class GameWorld {
         return this.getRootBSPNode().findSectorAtPoint(x, z);
     }
 
+    /** Selects the containing Blood sector whose vertical interval includes the player. */
+    public final SectorData getSectorDataAtPoint(int x, int z, int height) {
+        if (polygonSectorLookup) {
+            Sector containing = findContainingSector(x, z, height, bloodActiveSector);
+            if (containing != null) {
+                SectorData data = containing.getSectorData();
+                if (distanceOrderSectors && data != null) bloodActiveSector = data.sectorId;
+                return data;
+            }
+        }
+        return getSectorDataAtPoint(x, z);
+    }
+
     /**
      * Finds the C3B leaf whose wall polygon contains a world point. The BSP
      * tree remains the rendering-order accelerator, but imported Build maps
@@ -322,26 +342,118 @@ public final class GameWorld {
      * floor height, and portal ownership correct for those maps.
      */
     private Sector findContainingSector(int x, int z) {
+        return findContainingSector(x, z, 0, (short)-1, false);
+    }
+
+    private Sector findContainingSector(int x, int z, int height, short preferredSector) {
+        return findContainingSector(x, z, height, preferredSector, true);
+    }
+
+    private Sector findContainingSector(int x, int z, int height, short preferredSector,
+                                        boolean useHeight) {
         if (this.bspSectors == null || this.vertices == null) return null;
+        Sector firstContaining = null;
+        Sector firstExactHeight = null;
+        Sector linkedExactHeight = null;
+        Sector preferredExactHeight = null;
+        Sector nearestHeight = null;
+        int nearestGap = Integer.MAX_VALUE;
+        short linkedUpper = -1;
+        short linkedLower = -1;
+        if (preferredSector >= 0 && upperStackSector != null
+                && preferredSector < upperStackSector.length) {
+            linkedUpper = upperStackSector[preferredSector];
+            linkedLower = lowerStackSector[preferredSector];
+        }
         for (int sectorIndex = 0; sectorIndex < this.bspSectors.length; sectorIndex++) {
             Sector leaf = this.bspSectors[sectorIndex];
             if (leaf == null || leaf.walls == null || leaf.walls.length < 3) continue;
-            boolean inside = false;
-            for (int i = 0, previous = leaf.walls.length - 1; i < leaf.walls.length; previous = i++) {
-                WallSegment currentWall = leaf.walls[i];
-                WallSegment previousWall = leaf.walls[previous];
-                Point2D current = this.vertices[currentWall.startVertexIndex & 0xFFFF];
-                Point2D prior = this.vertices[previousWall.startVertexIndex & 0xFFFF];
-                if ((current.y > z) != (prior.y > z)) {
-                    long intersectionX = current.x
-                            + ((long)(z - current.y) * (long)(prior.x - current.x))
-                            / (long)(prior.y - current.y);
-                    if ((long)x < intersectionX) inside = !inside;
+            if (!sectorContainsPoint(leaf, x, z)) continue;
+            if (!useHeight) return leaf;
+            if (firstContaining == null) firstContaining = leaf;
+            SectorData data = leaf.getSectorData();
+            if (data == null) continue;
+            int floor = data.floorHeight;
+            int ceiling = data.ceilingHeight;
+            if (height >= floor && height < ceiling) {
+                if (data.sectorId == preferredSector) {
+                    preferredExactHeight = leaf;
+                } else if (data.sectorId == linkedUpper || data.sectorId == linkedLower) {
+                    if (linkedExactHeight == null) linkedExactHeight = leaf;
+                } else if (firstExactHeight == null) {
+                    firstExactHeight = leaf;
                 }
             }
-            if (inside) return leaf;
+            int gap = height < floor ? floor - height : height - ceiling + 1;
+            if (gap < nearestGap) {
+                nearestGap = gap;
+                nearestHeight = leaf;
+            }
         }
-        return null;
+        if (preferredExactHeight != null) return preferredExactHeight;
+        if (linkedExactHeight != null) return linkedExactHeight;
+        if (firstExactHeight != null) return firstExactHeight;
+        if (nearestHeight != null) return nearestHeight;
+        return firstContaining;
+    }
+
+    private boolean sectorContainsPoint(Sector leaf, int x, int z) {
+        boolean inside = false;
+        for (int i = 0, previous = leaf.walls.length - 1; i < leaf.walls.length; previous = i++) {
+            WallSegment currentWall = leaf.walls[i];
+            WallSegment previousWall = leaf.walls[previous];
+            Point2D current = this.vertices[currentWall.startVertexIndex & 0xFFFF];
+            Point2D prior = this.vertices[previousWall.startVertexIndex & 0xFFFF];
+            if ((current.y > z) != (prior.y > z)) {
+                long intersectionX = current.x
+                        + ((long)(z - current.y) * (long)(prior.x - current.x))
+                        / (long)(prior.y - current.y);
+                if ((long)x < intersectionX) inside = !inside;
+            }
+        }
+        return inside;
+    }
+
+    /** Allocates the tiny per-sector suppression map used by Blood stack rendering. */
+    public final void initializeBloodStackVisibility(int sectorCount) {
+        bloodHiddenStackSectors = new boolean[sectorCount];
+    }
+
+    /**
+     * Avoids drawing unrelated room-over-room polygons that occupy the camera's
+     * horizontal point, while retaining the active sector and its marker-linked
+     * upper/lower counterparts for portal rendering.
+     */
+    public final void prepareBloodStackVisibility(int x, int z) {
+        if (!distanceOrderSectors || bloodHiddenStackSectors == null || bspSectors == null) return;
+        for (int i = 0; i < bloodHiddenStackSectors.length; ++i) {
+            bloodHiddenStackSectors[i] = false;
+        }
+        short active = bloodActiveSector;
+        if (active < 0) return;
+        short upper = -1;
+        short lower = -1;
+        if (active >= 0 && upperStackSector != null && active < upperStackSector.length) {
+            upper = upperStackSector[active];
+            lower = lowerStackSector[active];
+        }
+        for (int i = 0; i < bspSectors.length; ++i) {
+            Sector leaf = bspSectors[i];
+            if (leaf == null || leaf.walls == null || leaf.walls.length < 3
+                    || !sectorContainsPoint(leaf, x, z)) continue;
+            SectorData data = leaf.getSectorData();
+            if (data == null) continue;
+            int id = data.sectorId;
+            if (id != active && id != upper && id != lower
+                    && id >= 0 && id < bloodHiddenStackSectors.length) {
+                bloodHiddenStackSectors[id] = true;
+            }
+        }
+    }
+
+    public final boolean shouldRenderBloodSector(int sectorId) {
+        return bloodHiddenStackSectors == null || sectorId < 0
+                || sectorId >= bloodHiddenStackSectors.length || !bloodHiddenStackSectors[sectorId];
     }
 
     public final void initializeWorld() {
@@ -535,7 +647,9 @@ public final class GameWorld {
     // ==================== Rendering Entry Point ====================
 
     public void render3DView(int[] targetScreenBuffer) {
-        SectorData curSecData = getSectorDataAtPoint(playerBody.x, playerBody.z);
+        SectorData curSecData = distanceOrderSectors
+                ? getSectorDataAtPoint(playerBody.x, playerBody.z, playerBody.y >> 16)
+                : getSectorDataAtPoint(playerBody.x, playerBody.z);
         int floorH = curSecData != null ? curSecData.floorHeight : 0;
         int bobY = MathUtils.fastSin(walkBobPhase) >> 1;
         int cameraHeightFP = ((floorH + PLAYER_HEIGHT_OFFSET) << 16) + bobY + jumpOffset;
@@ -605,7 +719,9 @@ public final class GameWorld {
         int proposedX = playerBody.x + dx;
         int proposedZ = playerBody.z + dz;
 
-        SectorData curSector = getSectorDataAtPoint(playerBody.x, playerBody.z);
+        SectorData curSector = distanceOrderSectors
+                ? getSectorDataAtPoint(playerBody.x, playerBody.z, playerBody.y >> 16)
+                : getSectorDataAtPoint(playerBody.x, playerBody.z);
         collisionTestPoint.x = proposedX;
         collisionTestPoint.y = proposedZ;
 

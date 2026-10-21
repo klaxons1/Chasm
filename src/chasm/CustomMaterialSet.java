@@ -8,9 +8,8 @@ import java.io.InputStream;
  * Runtime materials for a C3D custom level.
  *
  * Unlike legacy TX/SP atlases, custom levels reference individual indexed BMP
- * resources through a tiny manifest. PNG may be used by the editor, but the
- * JAR-facing format stays BMP4/BMP8 so palette indices remain available for
- * Java ME lighting.
+ * resources through a tiny manifest. BMP8 Blood materials preserve every
+ * authored BLOOD.PAL index; compact BMP4 materials remain supported elsewhere.
  *
  * Manifest example:
  *   wall.1=textures/brick.bmp
@@ -216,15 +215,25 @@ public final class CustomMaterialSet {
             throw new IOException("Wall dimensions must be 1..512: " + path);
         }
 
-        Texture texture = new Texture(slot, bmp.width, bmp.height, 0, 0, first16Colors(bmp.palette));
-        for (int x = 0; x < bmp.width; x += 2) {
-            byte[] column = new byte[bmp.height];
-            for (int y = 0; y < bmp.height; ++y) {
-                int high = bmp.indices[y * bmp.width + x] & 15;
-                int low = x + 1 < bmp.width ? bmp.indices[y * bmp.width + x + 1] & 15 : 0;
-                column[y] = (byte)((high << 4) | low);
+        Texture texture = new Texture(slot, bmp.width, bmp.height, 0, 0, bmp.palette);
+        if (bmp.bitDepth == 8) {
+            for (int x = 0; x < bmp.width; ++x) {
+                byte[] column = new byte[bmp.height];
+                for (int y = 0; y < bmp.height; ++y) {
+                    column[y] = bmp.indices[y * bmp.width + x];
+                }
+                texture.setIndexed8PixelColumn(x, column);
             }
-            texture.setPixelData(x, column);
+        } else {
+            for (int x = 0; x < bmp.width; x += 2) {
+                byte[] column = new byte[bmp.height];
+                for (int y = 0; y < bmp.height; ++y) {
+                    int high = bmp.indices[y * bmp.width + x] & 15;
+                    int low = x + 1 < bmp.width ? bmp.indices[y * bmp.width + x + 1] & 15 : 0;
+                    column[y] = (byte)((high << 4) | low);
+                }
+                texture.setPixelData(x, column);
+            }
         }
         return texture;
     }
@@ -246,7 +255,7 @@ public final class CustomMaterialSet {
             }
         }
         Sprite sprite = new Sprite(slot, columnMajor);
-        sprite.colorPalettes = Texture.createColorPalettes(first16Colors(bmp.palette));
+        sprite.colorPalettes = Texture.createColorPalettes(bmp.palette);
         sprite.buildFlatColors();
         return sprite;
     }
@@ -262,16 +271,25 @@ public final class CustomMaterialSet {
             throw new IOException("Sprite dimensions must be 1..255: " + path);
         }
 
-        Texture texture = new Texture((byte)-slot, bmp.width, bmp.height, 0, 0,
-                first16Colors(bmp.palette));
-        for (int x = 0; x < bmp.width; x += 2) {
-            byte[] column = new byte[bmp.height];
-            for (int y = 0; y < bmp.height; ++y) {
-                int high = bmp.indices[y * bmp.width + x] & 15;
-                int low = x + 1 < bmp.width ? bmp.indices[y * bmp.width + x + 1] & 15 : 0;
-                column[y] = (byte)((high << 4) | low);
+        Texture texture = new Texture((byte)-slot, bmp.width, bmp.height, 0, 0, bmp.palette);
+        if (bmp.bitDepth == 8) {
+            for (int x = 0; x < bmp.width; ++x) {
+                byte[] column = new byte[bmp.height];
+                for (int y = 0; y < bmp.height; ++y) {
+                    column[y] = bmp.indices[y * bmp.width + x];
+                }
+                texture.setIndexed8PixelColumn(x, column);
             }
-            texture.setPixelData(x, column);
+        } else {
+            for (int x = 0; x < bmp.width; x += 2) {
+                byte[] column = new byte[bmp.height];
+                for (int y = 0; y < bmp.height; ++y) {
+                    int high = bmp.indices[y * bmp.width + x] & 15;
+                    int low = x + 1 < bmp.width ? bmp.indices[y * bmp.width + x + 1] & 15 : 0;
+                    column[y] = (byte)((high << 4) | low);
+                }
+                texture.setPixelData(x, column);
+            }
         }
         return texture;
     }
@@ -289,17 +307,12 @@ public final class CustomMaterialSet {
             throw new IOException("Texture palette needs at least 16 colors: " + path);
         }
         for (int i = 0; i < bmp.indices.length; ++i) {
-            if ((bmp.indices[i] & 0xFF) > 15) {
-                throw new IOException("Only palette indices 0..15 are supported: " + path);
+            if ((bmp.indices[i] & 0xFF) >= bmp.palette.length) {
+                throw new IOException("Texture index exceeds its BMP palette: " + path);
             }
         }
     }
 
-    private static int[] first16Colors(int[] source) {
-        int[] colors = new int[16];
-        System.arraycopy(source, 0, colors, 0, 16);
-        return colors;
-    }
 
     private static Texture[] parseWallAnimation(String value, Texture[] textures, int targetSlot)
             throws IOException {

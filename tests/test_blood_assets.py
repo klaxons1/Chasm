@@ -16,7 +16,7 @@ def map_xor(data, key):
                  for index, value in enumerate(data))
 
 
-def make_v7_map():
+def make_v7_map(sprite_markers=False):
     key = int.from_bytes(b'Matt', 'little')
     map_revision = 9
     header = bytearray(37)
@@ -24,7 +24,7 @@ def make_v7_map():
     struct.pack_into('<hh', header, 12, 512, 0)
     struct.pack_into('<h', header, 16, 0)  # one sky offset
     struct.pack_into('<I', header, 27, map_revision)
-    struct.pack_into('<HHH', header, 31, 1, 3, 0)
+    struct.pack_into('<HHH', header, 31, 1, 3, 2 if sprite_markers else 0)
 
     encrypted_header = map_xor(header, key)
     size_table = bytearray(128)
@@ -47,9 +47,24 @@ def make_v7_map():
         struct.pack_into('<h', wall, 30, -1)
         walls.extend(map_xor(wall, (map_revision * 40) | key))
 
+    sprites = bytearray()
+    if sprite_markers:
+        sprite_key = (map_revision * 44) | key
+        for lotag, marker_id in ((11, 7), (12, 7)):
+            sprite = bytearray(44)
+            struct.pack_into('<iih', sprite, 0, 512, 512, -2048)
+            struct.pack_into('<h', sprite, 24, 0)  # sector
+            struct.pack_into('<h', sprite, 26, 0)  # status
+            struct.pack_into('<h', sprite, 38, lotag)
+            struct.pack_into('<h', sprite, 42, 1)  # XSPRITE index
+            xsprite = bytearray(56)
+            struct.pack_into('<h', xsprite, 16, marker_id)
+            sprites.extend(map_xor(sprite, sprite_key))
+            sprites.extend(xsprite)
+
     return (b'BLM\x1a' + struct.pack('<H', 0x0700) + encrypted_header +
             map_xor(size_table, 3) + sky_offsets +
-            map_xor(sector, map_revision * 40) + bytes(walls))
+            map_xor(sector, map_revision * 40) + bytes(walls) + bytes(sprites))
 
 
 class BloodAssetTests(unittest.TestCase):
@@ -64,6 +79,13 @@ class BloodAssetTests(unittest.TestCase):
         self.assertEqual((level['walls'][1]['x_repeat'], level['walls'][1]['y_repeat'],
                           level['walls'][1]['x_pan'], level['walls'][1]['y_pan']),
                          (4, 16, 64, 128))
+
+    def test_decode_stack_marker_lotag_and_xsprite_data1(self):
+        level = decode_blood_map(make_v7_map(sprite_markers=True))
+        markers = [sprite for sprite in level['sprites'] if sprite['lotag'] in (11, 12)]
+        self.assertEqual([(sprite['lotag'], sprite['data1']) for sprite in markers],
+                         [(11, 7), (12, 7)])
+        self.assertEqual([sprite['sector'] for sprite in markers], [0, 0])
 
     def test_read_art_column_major_pixels(self):
         # Tile 7 is a 2x2 image: ART stores each column top-to-bottom.
@@ -106,6 +128,7 @@ class BloodAssetTests(unittest.TestCase):
 
     def test_write_indexed_bmp8(self):
         palette = [(i, i, i) for i in range(256)]
+        palette[3] = (17, 83, 201)
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'tile.bmp'
             write_bmp8(path, 2, 2, bytes((1, 2, 3, 4)), palette)
@@ -115,6 +138,7 @@ class BloodAssetTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('<i', bmp, 22)[0], 2)
         self.assertEqual(struct.unpack_from('<H', bmp, 28)[0], 8)
         pixel_offset = struct.unpack_from('<I', bmp, 10)[0]
+        self.assertEqual(bmp[54 + 3 * 4:54 + 4 * 4], bytes((201, 83, 17, 0)))
         # BMP rows are bottom-up and padded to four bytes.
         self.assertEqual(bmp[pixel_offset:pixel_offset + 8], bytes((3, 4, 0, 0, 1, 2, 0, 0)))
 

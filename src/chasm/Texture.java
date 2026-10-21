@@ -2,17 +2,20 @@ package chasm;
 
 /**
  * Texture class for handling game textures with palette-based rendering
- * Supports 4-bit color (16 colors) with multiple lighting variations
+ * Supports packed 4-bit textures and full 8-bit indexed Blood textures
  */
 public final class Texture {
     public short width;           // Texture width in pixels
     public short height;          // Texture height in pixels
     public short horizontalOffset; // Horizontal offset for texture alignment
     public short verticalOffset;   // Vertical offset for texture alignment
-    public byte[][] pixelData;    // 4-bit pixel data (2 pixels per byte) // 30.11.2025 - can be 3, 2 bit
-    public int[][] colorPalettes; // 16 color palettes with different lighting levels
+    public byte[][] pixelData;    // Packed 4-bit pairs or one 8-bit indexed column per entry
+    public int[][] colorPalettes; // Lighting palettes; Blood's 256-color table is shared
     public byte textureType;      // Texture type identifier
+    public boolean indexed8Bit;   // True when each pixel byte is a full palette index
     private int widthMask;        // Mask for fast modulo operations (width - 1)
+    private static int[] shared256BasePalette;
+    private static int[][] shared256ColorPalettes;
 
     // Palette level 8 is the authored texture color. The remaining levels
     // describe exposure in approximately linear light: three stops below the
@@ -70,6 +73,15 @@ public final class Texture {
         this.pixelData[row >> 1] = pixels;
     }
 
+    /** Installs one uncompressed 8-bit indexed texel column. */
+    public final void setIndexed8PixelColumn(int column, byte[] pixels) {
+        if (!indexed8Bit) {
+            indexed8Bit = true;
+            pixelData = new byte[width][];
+        }
+        pixelData[column] = pixels;
+    }
+
     /**
      * Get pixel row with wrap-around (for repeating textures)
      * @param row Row index (handles negative and out-of-bounds)
@@ -84,7 +96,7 @@ public final class Texture {
             row += this.width;
         }
 
-        return this.pixelData[row >> 1];
+        return this.indexed8Bit ? this.pixelData[row] : this.pixelData[row >> 1];
     }
 
     /**
@@ -101,7 +113,8 @@ public final class Texture {
     }
 
     public final byte[] getPixelRowFast(int row) {
-        return this.pixelData[getWrappedColumn(row) >> 1];
+        int column = getWrappedColumn(row);
+        return this.pixelData[this.indexed8Bit ? column : column >> 1];
     }
 
     /**
@@ -187,6 +200,11 @@ public final class Texture {
      */
     public static int[][] createColorPalettes(int[] basePalette) {
         int paletteSize = basePalette.length;
+        boolean cacheBloodPalette = paletteSize == 256;
+        if (cacheBloodPalette && shared256BasePalette != null
+                && samePalette(basePalette, shared256BasePalette)) {
+            return shared256ColorPalettes;
+        }
         int[][] palettes = new int[LIGHT_EXPOSURES.length][paletteSize];
         byte[][] channelTable = getShadedChannels();
 
@@ -212,7 +230,19 @@ public final class Texture {
             }
         }
 
+        if (cacheBloodPalette) {
+            shared256BasePalette = new int[paletteSize];
+            System.arraycopy(basePalette, 0, shared256BasePalette, 0, paletteSize);
+            shared256ColorPalettes = palettes;
+        }
         return palettes;
+    }
+
+    private static boolean samePalette(int[] left, int[] right) {
+        for (int i = 0; i < left.length; ++i) {
+            if (left[i] != right[i]) return false;
+        }
+        return true;
     }
 
     /**

@@ -417,7 +417,7 @@ public class PortalRenderer {
             int textureRangeU = scaleWallU(clippedTextureEndU - clippedTextureStartU,
                     surface.textureRepeatX);
 
-            drawWallColumn(sectorData, wallTexture, wallTexture,
+            drawWallColumn(sectorData, surface, wallTexture, wallTexture,
                     screenStartX, screenCeilingStartY, screenFloorStartY, screenFloorStartY, screenFloorStartY, screenStart.y,
                     screenEndX, screenCeilingEndY, screenFloorEndY, screenFloorEndY, screenFloorEndY, screenEnd.y,
                     textureStartU, textureRangeU,
@@ -522,7 +522,7 @@ public class PortalRenderer {
             int textureRangeU = scaleWallU(clippedTextureEndU - clippedTextureStartU,
                     frontSurface.textureRepeatX);
 
-            drawWallColumn(frontSector, upperTexture, lowerTexture,
+            drawWallColumn(frontSector, frontSurface, upperTexture, lowerTexture,
                     screenStartX, frontCeilingStartY, backCeilingStartY, backFloorStartY, frontFloorStartY, screenStart.y,
                     screenEndX, frontCeilingEndY, backCeilingEndY, backFloorEndY, frontFloorEndY, screenEnd.y,
                     textureStartU, textureRangeU,
@@ -635,6 +635,8 @@ public class PortalRenderer {
     static void renderWorld(int playerX, int playerY, int playerZ, int playerAngle) {
         GameWorld world = LevelLoader.gameWorld;
         if (world.distanceOrderSectors) {
+            world.getSectorDataAtPoint(playerX, playerZ, -playerY >> 16);
+            world.prepareBloodStackVisibility(playerX, playerZ);
             // Blood's first-pass package has no authored sky texture. Clear
             // uncovered spans so they do not expose stale/black pixels.
             int clearColor = skyFlatColor;
@@ -668,6 +670,8 @@ public class PortalRenderer {
             prepareBloodWallOrder(world, transformedVertices);
             for (int i = 0; i < bloodWallOrder.length; ++i) {
                 if (i > 0 && Sector.isRenderComplete()) break;
+                int segmentSector = bloodWallOrder[i].getWallSector().sectorId;
+                if (!world.shouldRenderBloodSector(segmentSector)) continue;
                 renderWallSegment(bloodWallOrder[i], transformedVertices,
                         cameraXFixed, playerY, cameraZFixed, doubleAngle);
             }
@@ -851,10 +855,10 @@ public class PortalRenderer {
             // reach width. Keep the old wrapped accessor as a defensive
             // fallback for malformed/custom sprite dimensions.
             byte[] textureColumnPixels = textureColumn < textureWidth
-                    ? textureColumns[textureColumn >> 1]
+                    ? textureColumns[texture.indexed8Bit ? textureColumn : textureColumn >> 1]
                     : texture.getPixelRow(textureColumn);
-            drawSpriteColumn(textureColumnPixels, textureColumn & 1, colorPalette,
-                    column + screenX, screenY, bottomY, 0, textureHeight);
+            drawSpriteColumn(textureColumnPixels, textureColumn & 1, texture.indexed8Bit,
+                    colorPalette, column + screenX, screenY, bottomY, 0, textureHeight);
             textureU += textureStepU;
             textureColumn = textureU >>> 16;
         }
@@ -898,7 +902,8 @@ public class PortalRenderer {
         return (int)(((long)height * (long)repeat) / 8L);
     }
 
-    private static void drawWallColumn(SectorData sectorData, Texture upperTexture, Texture lowerTexture,
+    private static void drawWallColumn(SectorData sectorData, WallSurface lightSurface,
+                                       Texture upperTexture, Texture lowerTexture,
                                        int startX, int ceilingStartY, int upperBottomStartY, int lowerTopStartY, int floorStartY, int startDepth,
                                        int endX, int ceilingEndY, int upperBottomEndY, int lowerTopEndY, int floorEndY, int endDepth,
                                        int textureStartU, int textureRangeU,
@@ -951,7 +956,15 @@ public class PortalRenderer {
         short sectorId = (short)sectorData.sectorId;
         Sprite floorTexture = sectorData.floorTexture;
         Sprite ceilingTexture = sectorData.ceilingTexture;
-        int lightLevel = sectorData.lightLevel = sectorData.getLightLevel();
+        int lightLevel;
+        if (lightSurface != null && lightSurface.lightLevel >= 0) {
+            lightLevel = lightSurface.lightLevel;
+            if (gunFireLighting && lightLevel < 16) {
+                lightLevel = lightLevel + 2 > 16 ? 16 : lightLevel + 2;
+            }
+        } else {
+            lightLevel = sectorData.lightLevel = sectorData.getLightLevel();
+        }
 
         // Depth interpolation for perspective-correct texturing
         long depthRange = (long)(startDepth - endDepth);
@@ -1008,7 +1021,7 @@ public class PortalRenderer {
                 if (ceilingY < upperBottomY) {
                     int upperColumn = upperTexture.getWrappedColumn(textureColumn);
                     drawWallTextureColumn(upperTexture.getPixelRowFast(upperColumn), upperColumn & 1,
-                            upperTexture.colorPalettes[effectiveLightLevel], column,
+                            upperTexture.indexed8Bit, upperTexture.colorPalettes[effectiveLightLevel], column,
                             screenCeilingY, screenUpperBottomY, upperTextureOffsetV, upperWallHeight, upperTextureHeight);
 
                     if (floorTexture != null) {
@@ -1034,7 +1047,7 @@ public class PortalRenderer {
                 if (lowerTopY < floorY) {
                     int lowerColumn = lowerTexture.getWrappedColumn(textureColumn);
                     drawWallTextureColumn(lowerTexture.getPixelRowFast(lowerColumn), lowerColumn & 1,
-                            lowerTexture.colorPalettes[effectiveLightLevel], column,
+                            lowerTexture.indexed8Bit, lowerTexture.colorPalettes[effectiveLightLevel], column,
                             screenLowerTopY, screenFloorY, lowerTextureOffsetV, lowerWallHeight, lowerTextureHeight);
 
                     if (ceilingTexture != null) {
@@ -1129,29 +1142,29 @@ public class PortalRenderer {
         int unrolledEnd = endPixelIndex - 3;
         while (pixelIndex <= unrolledEnd) {
             buffer[pixelIndex++] = colorPalette[texturePixels[
-                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18]];
+                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18] & 0xff];
             textureU += textureStepU;
             textureV += textureStepV;
 
             buffer[pixelIndex++] = colorPalette[texturePixels[
-                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18]];
+                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18] & 0xff];
             textureU += textureStepU;
             textureV += textureStepV;
 
             buffer[pixelIndex++] = colorPalette[texturePixels[
-                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18]];
+                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18] & 0xff];
             textureU += textureStepU;
             textureV += textureStepV;
 
             buffer[pixelIndex++] = colorPalette[texturePixels[
-                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18]];
+                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18] & 0xff];
             textureU += textureStepU;
             textureV += textureStepV;
         }
 
         for (; pixelIndex <= endPixelIndex; pixelIndex++) {
             buffer[pixelIndex] = colorPalette[texturePixels[
-                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18]];
+                    ((textureU & 16515072) + (textureV & 1056964608)) >> 18] & 0xff];
             textureU += textureStepU;
             textureV += textureStepV;
         }
@@ -1308,8 +1321,9 @@ public class PortalRenderer {
      * @param textureStartV Starting V coordinate in texture
      * @param textureHeight Texture height for scaling
      */
-    private static void drawSpriteColumn(byte[] pixelData, int pixelNibble, int[] colorPalette,
-                                         int column, int topY, int bottomY, int textureStartV, int textureHeight) {
+    private static void drawSpriteColumn(byte[] pixelData, int pixelNibble, boolean indexed8Bit,
+                                         int[] colorPalette, int column, int topY, int bottomY,
+                                         int textureStartV, int textureHeight) {
 
         short floorClipY = Sector.floorClip[column];
         short ceilingClipY = Sector.ceilingClip[column];
@@ -1350,7 +1364,17 @@ public class PortalRenderer {
         int pixelDataLength = pixelData.length;
         int[] buffer = screenBuffer;
 
-        if (pixelNibble == 0) {
+        if (indexed8Bit) {
+            for (int pixelIndex = startPixelIndex; pixelIndex <= endPixelIndex;
+                 pixelIndex += VIEWPORT_WIDTH) {
+                int texelIndex = textureV >>> 16;
+                if (texelIndex < pixelDataLength) {
+                    int colorIndex = pixelData[texelIndex] & 0xff;
+                    if (colorIndex != 0) buffer[pixelIndex] = colorPalette[colorIndex];
+                }
+                textureV += textureStepV;
+            }
+        } else if (pixelNibble == 0) {
             for (int pixelIndex = startPixelIndex; pixelIndex <= endPixelIndex; pixelIndex += VIEWPORT_WIDTH) {
                 int texelIndex = textureV >>> 16;
                 if (texelIndex < pixelDataLength) {
@@ -1388,8 +1412,9 @@ public class PortalRenderer {
      * @param wallHeight    Wall height in texels
      * @param textureHeight Texture height for masking
      */
-    private static void drawWallTextureColumn(byte[] pixelData, int pixelNibble, int[] colorPalette,
-                                              int column, int topY, int bottomY, int textureOffsetV, int wallHeight, int textureHeight) {
+    private static void drawWallTextureColumn(byte[] pixelData, int pixelNibble, boolean indexed8Bit,
+                                              int[] colorPalette, int column, int topY, int bottomY,
+                                              int textureOffsetV, int wallHeight, int textureHeight) {
 
         short floorClipY = Sector.floorClip[column];
         short ceilingClipY = Sector.ceilingClip[column];
@@ -1420,6 +1445,20 @@ public class PortalRenderer {
         if (wrappedOffsetV < 0) wrappedOffsetV += textureHeight;
         int textureV = (clippedTopY - topY) * textureStepV + (wrappedOffsetV << 16);
         int[] buffer = screenBuffer;
+
+        if (indexed8Bit) {
+            int pixelDataLength = pixelData.length;
+            for (int pixelIndex = startPixelIndex; pixelIndex <= endPixelIndex;
+                 pixelIndex += VIEWPORT_WIDTH) {
+                int textureRow = (textureV >> 16) % textureHeight;
+                if (textureRow < 0) textureRow += textureHeight;
+                if (textureRow < pixelDataLength) {
+                    buffer[pixelIndex] = colorPalette[pixelData[textureRow] & 0xff];
+                }
+                textureV += textureStepV;
+            }
+            return;
+        }
 
         // Optimized loops for common texture heights
         switch (textureHeight + pixelNibble) {
@@ -1535,6 +1574,15 @@ public class PortalRenderer {
         int textureV = -textureStepV * (HALF_VIEWPORT_HEIGHT - clippedTopY) + 6553600;
 
         int[] buffer = screenBuffer;
+
+        if (skyboxTexture.indexed8Bit) {
+            for (int pixelIndex = startPixelIndex; pixelIndex <= endPixelIndex;
+                 pixelIndex += VIEWPORT_WIDTH) {
+                buffer[pixelIndex] = colorPalette[pixelData[(textureV >> 16) & 127] & 0xff];
+                textureV += textureStepV;
+            }
+            return;
+        }
 
         if ((textureColumn & 1) == 0) {
             for (int pixelIndex = startPixelIndex; pixelIndex <= endPixelIndex; pixelIndex += VIEWPORT_WIDTH) {

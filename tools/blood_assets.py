@@ -129,9 +129,9 @@ def decode_blood_map(data):
     """Decode the geometry records in a Blood v6/v7 MAP file.
 
     Blood v7 wraps standard Build sector/wall/sprite records in a small header
-    and applies record-specific XOR keys. Extended XSPRITE/XWALL/XSECTOR data
-    is skipped using record sizes from the map header; core geometry remains
-    available for conversion to the Chasm C3B world representation.
+    and applies record-specific XOR keys. Extended records are skipped at
+    their header-declared sizes; XSPRITE.data1 is retained for upper/lower
+    stack marker pairing while other XSPRITE fields remain unused.
     """
     if len(data) < 6 or data[:4] != b'BLM\x1a':
         raise BloodAssetError('not a Blood BLM map')
@@ -227,17 +227,27 @@ def decode_blood_map(data):
         cursor += 44
         if crypted:
             raw = _decrypt_map_block(raw, sprite_key)
-        sprites.append({'x': struct.unpack_from('<i', raw, 0)[0],
-                        'y': struct.unpack_from('<i', raw, 4)[0],
-                        'z': struct.unpack_from('<i', raw, 8)[0],
-                        'flags': _u16(raw, 12), 'tile': _u16(raw, 14),
-                        'sector': struct.unpack_from('<h', raw, 24)[0],
-                        'status': struct.unpack_from('<h', raw, 26)[0],
-                        'angle': struct.unpack_from('<h', raw, 28)[0],
-                        'extra': struct.unpack_from('<h', raw, 42)[0]})
-        if sprites[-1]['extra'] > 0:
+        sprite = {'x': struct.unpack_from('<i', raw, 0)[0],
+                  'y': struct.unpack_from('<i', raw, 4)[0],
+                  'z': struct.unpack_from('<i', raw, 8)[0],
+                  'flags': _u16(raw, 12), 'tile': _u16(raw, 14),
+                  'sector': struct.unpack_from('<h', raw, 24)[0],
+                  'status': struct.unpack_from('<h', raw, 26)[0],
+                  'angle': struct.unpack_from('<h', raw, 28)[0],
+                  'lotag': struct.unpack_from('<h', raw, 38)[0],
+                  'hitag': struct.unpack_from('<h', raw, 40)[0],
+                  'extra': struct.unpack_from('<h', raw, 42)[0]}
+        if sprite['extra'] > 0:
             _need(data, cursor, x_sprite_size, 'extended sprite %d' % i)
+            x_sprite = data[cursor:cursor + x_sprite_size]
+            # XSPRITE.data1 is the marker pairing ID used by Blood's stack
+            # links. The extension records in MAP v7 remain byte-oriented and
+            # use the same little-endian field layout as the runtime XSPRITE.
+            sprite['data1'] = struct.unpack_from('<h', x_sprite, 16)[0]
             cursor += x_sprite_size
+        else:
+            sprite['data1'] = 0
+        sprites.append(sprite)
 
     tiles = set()
     for sector in sectors:

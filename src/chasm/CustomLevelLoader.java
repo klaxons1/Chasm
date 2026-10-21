@@ -22,6 +22,7 @@ public final class CustomLevelLoader {
     // a UTF-8 INI sidecar and keeps the compiled binary geometry-only.
     private static final int HEADER_FLAG_EXTERNAL_ENTITIES = 1;
     private static final int HEADER_FLAG_BLOOD_MAP = 2;
+    private static final int HEADER_FLAG_BLOOD_STACK_LINKS = 4;
 
     // Per-sector flags, not C3B header flags.
     private static final int SECTOR_FLAG_CEILING_SKY = 1;
@@ -47,11 +48,16 @@ public final class CustomLevelLoader {
             int version = input.readUnsignedByte();
             if (version != VERSION) throw new IOException("Unsupported C3B version: " + version);
             int headerFlags = input.readUnsignedByte();
-            if ((headerFlags & ~(HEADER_FLAG_EXTERNAL_ENTITIES | HEADER_FLAG_BLOOD_MAP)) != 0) {
+            if ((headerFlags & ~(HEADER_FLAG_EXTERNAL_ENTITIES | HEADER_FLAG_BLOOD_MAP
+                    | HEADER_FLAG_BLOOD_STACK_LINKS)) != 0) {
                 throw new IOException("Unsupported C3B header flags: " + headerFlags);
             }
             boolean externalEntities = (headerFlags & HEADER_FLAG_EXTERNAL_ENTITIES) != 0;
             boolean bloodMap = (headerFlags & HEADER_FLAG_BLOOD_MAP) != 0;
+            boolean bloodStackLinks = (headerFlags & HEADER_FLAG_BLOOD_STACK_LINKS) != 0;
+            if (bloodStackLinks && !bloodMap) {
+                throw new IOException("Blood stack links require a Blood map");
+            }
             int rootNode = BinaryUtils.readShortLE(input);
 
             int vertexCount = readCount(input, "vertices");
@@ -91,6 +97,10 @@ public final class CustomLevelLoader {
 
             GameWorld world = targetWorld != null ? targetWorld : new GameWorld();
             world.distanceOrderSectors = bloodMap;
+            world.bloodStartSector = -1;
+            world.bloodActiveSector = -1;
+            world.upperStackSector = null;
+            world.lowerStackSector = null;
             Point2D[] vertices = new Point2D[vertexCount];
             for (int i = 0; i < vertexCount; ++i) {
                 vertices[i] = new Point2D(BinaryUtils.readShortLE(input) << 16,
@@ -116,7 +126,7 @@ public final class CustomLevelLoader {
             if (externalEntities) {
                 throw new IOException("External entities not used");
             } else {
-                installInlineObjects(input, objectCount, world, shouldLoadObjects);
+                installInlineObjects(input, objectCount, world, shouldLoadObjects, bloodMap);
             }
 
             WallSurface[] surfaces = new WallSurface[surfaceCount];
@@ -126,7 +136,7 @@ public final class CustomLevelLoader {
                 byte upper = input.readByte();
                 byte lower = input.readByte();
                 byte main = input.readByte();
-                input.readByte(); // reserved
+                int surfaceLight = input.readUnsignedByte();
                 int sectorId = BinaryUtils.readShortLE(input) & 0xFFFF;
                 if (sectorId >= sectorCount) throw new IOException("Surface sector out of range");
                 short offsetX = packedX;
@@ -142,7 +152,7 @@ public final class CustomLevelLoader {
                     if (repeatY == 0) repeatY = 8;
                 }
                 surfaces[i] = new WallSurface(upper, main, lower, sectorId,
-                        offsetX, offsetY, repeatX, repeatY);
+                        offsetX, offsetY, repeatX, repeatY, bloodMap ? surfaceLight : -1);
             }
             world.wallSurfaces = surfaces;
 
@@ -185,6 +195,31 @@ public final class CustomLevelLoader {
                 sectors[i] = sector;
             }
             world.sectors = sectors;
+            if (bloodMap && world.bloodStartSector >= 0
+                    && world.bloodStartSector < sectorCount && world.worldOrigin != null) {
+                SectorData startSector = sectors[world.bloodStartSector];
+                world.worldOrigin.y = ((startSector.floorHeight + GameWorld.PLAYER_HEIGHT_OFFSET) << 16);
+                world.bloodActiveSector = world.bloodStartSector;
+            }
+            world.upperStackSector = new short[sectorCount];
+            world.lowerStackSector = new short[sectorCount];
+            world.initializeBloodStackVisibility(sectorCount);
+            for (int i = 0; i < sectorCount; ++i) {
+                world.upperStackSector[i] = -1;
+                world.lowerStackSector[i] = -1;
+            }
+            if (bloodStackLinks) {
+                for (int i = 0; i < sectorCount; ++i) {
+                    short upper = BinaryUtils.readShortLE(input);
+                    short lower = BinaryUtils.readShortLE(input);
+                    if ((upper < -1 || upper >= sectorCount)
+                            || (lower < -1 || lower >= sectorCount)) {
+                        throw new IOException("Blood stack sector link out of range");
+                    }
+                    world.upperStackSector[i] = upper;
+                    world.lowerStackSector[i] = lower;
+                }
+            }
 
             short[] nodeStartX = new short[nodeCount];
             short[] nodeStartZ = new short[nodeCount];
@@ -271,7 +306,8 @@ public final class CustomLevelLoader {
 
     /** Reads legacy inline object records for early C3B1 packages. */
     private static void installInlineObjects(DataInputStream input, int objectCount,
-                                             GameWorld world, boolean shouldLoadObjects)
+                                             GameWorld world, boolean shouldLoadObjects,
+                                             boolean bloodMap)
             throws IOException {
         if (LevelLoader.levelVariant == 0) LevelLoader.levelVariant = 1;
         for (int i = 0; i < objectCount; ++i) {
@@ -283,6 +319,7 @@ public final class CustomLevelLoader {
 
             if (type >= 1 && type <= 4 && LevelLoader.levelVariant == type) {
                 world.worldOrigin = new Transform3D(x << 16, 0, z << 16, MathUtils.fromAngle4096(angle));
+                if (bloodMap && parameter >= 0) world.bloodStartSector = parameter;
             }
         }
         if (world.worldOrigin == null) {
