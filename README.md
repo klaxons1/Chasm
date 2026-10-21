@@ -73,3 +73,49 @@ A hit flashes the enemy with an additive red glow for a few ticks instead of ove
 - Some portal walls still show angle-dependent distortion; the root cause has not been isolated.
 - Transparent grate textures are drawn as opaque (no masked mid-texture pass yet).
 - The first build's staircase floor steps are only partially restored.
+
+## Blood J2ME prototype
+
+The Blood assets archive is treated as user-provided game data. `tools/blood_assets.py`
+can inspect its RFF directory, decode Blood v6/v7 MAP headers plus core sector,
+wall, and sprite geometry (including RFF/map XOR layers), extract selected RFF
+entries, and convert ART tiles into indexed BMP8 files while preserving palette
+indices. Keep generated assets outside Git (for example, under `/tmp/blood-art`):
+
+```bash
+python3 -m venv /tmp/blood-venv
+/tmp/blood-venv/bin/pip install -r tools/requirements-blood.txt
+/tmp/blood-venv/bin/python tools/blood_assets.py inspect Blood.7z
+/tmp/blood-venv/bin/python tools/blood_assets.py inspect-map Blood.7z E1M1.MAP
+/tmp/blood-venv/bin/python tools/blood_assets.py export-art Blood.7z /tmp/blood-e1m1-art --map E1M1.MAP
+/tmp/blood-venv/bin/python tools/blood_assets.py extract-rff Blood.7z /tmp/blood-maps --pattern '*.MAP'
+/tmp/blood-venv/bin/python tools/blood_assets.py extract-rff Blood.7z /tmp/blood-sound --container sounds.rff --pattern '*.MID'
+/tmp/blood-venv/bin/python tools/blood_to_c3b.py Blood.7z all /tmp/blood-allmaps
+```
+
+The ART export includes `tiles.json` with original tile IDs, dimensions,
+animations, and source ART file names; `--map` restricts it to tiles referenced
+by that map. RFF resources such as the Blood MIDIs can also be extracted with
+`extract-rff --container sounds.rff --pattern '*.MID'`. The MAP decoder has been
+exercised against all 43 maps in the provided archive. `tools/blood_to_c3b.py`
+can compile one map or the full map set, converting sector polygons,
+portal walls, floor/ceiling materials, BSP leaves, and spawn point to the J2ME
+engine's C3B format. The generated textures are resized and quantized for the
+engine's 4-bit feature-phone renderer.
+
+Build the Blood exploration MIDlet with the same LLM-J2ME-SUITE/JDK toolchain
+used by `build.sh` for Chasm. The default map is E1M1; `BLOOD_MAP` can select
+another map present in `Blood.7z`:
+
+```bash
+./build.sh blood
+BLOOD_MAP=E2M1.MAP ./build.sh blood
+```
+
+This produces `releases/BloodJ2ME.jar` and its JAD descriptor. The Blood canvas
+loads the converted geometry and supports keypad movement, turning, and strafing.
+This is a playable **map-exploration prototype**, not feature-complete Blood yet:
+Blood actors/sprite animation, weapons, sector events, slopes, masked walls,
+sounds/music, saves, and campaign progression are still outstanding. The source
+port is used as a format/behavior reference; its desktop engine is not copied
+into the constrained Java ME runtime.

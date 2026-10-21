@@ -25,6 +25,7 @@ public final class GameWorld {
     public Sector[] bspSectors;
     public WallSegment[] wallSegments;
     private int rootBSPNodeIndex = -1;
+    private boolean polygonSectorLookup;
 
     private Texture[] animatedWallTargets;
     private Texture[][] animatedWallFrames;
@@ -291,12 +292,54 @@ public final class GameWorld {
         return this.transformedVertices;
     }
 
+    public final void enablePolygonSectorLookup() {
+        polygonSectorLookup = true;
+    }
+
     public final Sector getSectorAtPoint(int x, int z) {
+        if (polygonSectorLookup) {
+            Sector containing = findContainingSector(x, z);
+            if (containing != null) return containing;
+        }
         return this.getRootBSPNode().findSectorNodeAtPoint(x, z);
     }
 
     public final SectorData getSectorDataAtPoint(int x, int z) {
+        if (polygonSectorLookup) {
+            Sector containing = findContainingSector(x, z);
+            if (containing != null) return containing.getSectorData();
+        }
         return this.getRootBSPNode().findSectorAtPoint(x, z);
+    }
+
+    /**
+     * Finds the C3B leaf whose wall polygon contains a world point. The BSP
+     * tree remains the rendering-order accelerator, but imported Build maps
+     * have arbitrary sector outlines that are not described by the C3B split
+     * planes alone. Testing the compact leaf polygons keeps player movement,
+     * floor height, and portal ownership correct for those maps.
+     */
+    private Sector findContainingSector(int x, int z) {
+        if (this.bspSectors == null || this.vertices == null) return null;
+        for (int sectorIndex = 0; sectorIndex < this.bspSectors.length; sectorIndex++) {
+            Sector leaf = this.bspSectors[sectorIndex];
+            if (leaf == null || leaf.walls == null || leaf.walls.length < 3) continue;
+            boolean inside = false;
+            for (int i = 0, previous = leaf.walls.length - 1; i < leaf.walls.length; previous = i++) {
+                WallSegment currentWall = leaf.walls[i];
+                WallSegment previousWall = leaf.walls[previous];
+                Point2D current = this.vertices[currentWall.startVertexIndex & 0xFFFF];
+                Point2D prior = this.vertices[previousWall.startVertexIndex & 0xFFFF];
+                if ((current.y > z) != (prior.y > z)) {
+                    long intersectionX = current.x
+                            + ((long)(z - current.y) * (long)(prior.x - current.x))
+                            / (long)(prior.y - current.y);
+                    if ((long)x < intersectionX) inside = !inside;
+                }
+            }
+            if (inside) return leaf;
+        }
+        return null;
     }
 
     public final void initializeWorld() {

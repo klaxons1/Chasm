@@ -1,0 +1,11 @@
+MIDlet-Name: Blood J2ME
+MIDlet-Version: 0.1.0
+MIDlet-Vendor: Chasm J2ME Port
+MIDlet-Icon: /icon.png
+MIDlet-Description: Blood Build-engine map exploration prototype for Java ME
+MIDlet-1: Blood J2ME, /icon.png, chasm.BloodMIDlet
+MIDlet-Jar-URL: BloodJ2ME.jar
+MIDlet-Jar-Size: 287647
+MicroEdition-Profile: MIDP-2.0
+MicroEdition-Configuration: CLDC-1.1
+Blood-Map: E1M1.MAP

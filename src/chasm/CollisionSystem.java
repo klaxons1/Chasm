@@ -7,12 +7,21 @@ package chasm;
  */
 public final class CollisionSystem {
 
-    static final int COLLISION_RADIUS = 655360; // 10 units fixed-point
-    static final int OBJECT_COLLISION_RADIUS = 1310720; // 20 units
-    static final int PICKUP_RADIUS = 1966080; // 30 units
+    static int COLLISION_RADIUS = 655360; // 10 units fixed-point
+    static int OBJECT_COLLISION_RADIUS = 1310720; // 20 units
+    static int PICKUP_RADIUS = 1966080; // 30 units
 
-    private static final int MIN_WALL_HEIGHT = 16;
-    private static final int MIN_CEILING_CLEARANCE = 50;
+    static int MIN_WALL_HEIGHT = 16;
+    static int MIN_CEILING_CLEARANCE = 50;
+
+    /** Applies Blood's compressed-world scale without changing Chasm defaults. */
+    static void useBloodScale() {
+        COLLISION_RADIUS = 2 << 16;
+        OBJECT_COLLISION_RADIUS = 4 << 16;
+        PICKUP_RADIUS = 6 << 16;
+        MIN_WALL_HEIGHT = 4;
+        MIN_CEILING_CLEARANCE = 8;
+    }
 
     private CollisionSystem() {}
 
