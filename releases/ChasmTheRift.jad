@@ -1,0 +1,10 @@
+MIDlet-Name: Chasm: The Rift
+MIDlet-Version: 1.0.0
+MIDlet-Vendor: Action Forms / J2ME Port
+MIDlet-Icon: /icon.png
+MIDlet-Description: 3D FPS with C3D2 portal renderer and polygonal 3D entities for Nokia S60 & Sony Ericsson
+MIDlet-1: Chasm: The Rift, /icon.png, chasm.ChasmMIDlet
+MIDlet-Jar-URL: ChasmTheRift.jar
+MIDlet-Jar-Size: 854450
+MicroEdition-Profile: MIDP-2.0
+MicroEdition-Configuration: CLDC-1.1
